@@ -3,7 +3,7 @@
  *  Licensed under the MIT License. See License.txt in the project root for license information.
  *--------------------------------------------------------------------------------------------*/
 
-import { registerColor, foreground, editorInfoForeground, editorWarningForeground, errorForeground, badgeBackground, badgeForeground, listDeemphasizedForeground, contrastBorder, inputBorder, toolbarHoverBackground } from '../../../../platform/theme/common/colorRegistry.js';
+import { registerColor, foreground, editorInfoForeground, editorWarningForeground, errorForeground, badgeBackground, badgeForeground, listDeemphasizedForeground, listHoverForeground, contrastBorder, inputBorder, toolbarHoverBackground } from '../../../../platform/theme/common/colorRegistry.js';
 import { registerThemingParticipant } from '../../../../platform/theme/common/themeService.js';
 import { ThemeIcon } from '../../../../base/common/themables.js';
 import { Color } from '../../../../base/common/color.js';
@@ -281,6 +281,19 @@ export function registerColors() {
 				color: ${debugConsoleInputIconForegroundColor};
 			}
 		`);
+
+		const listHoverForegroundColor = theme.getColor(listHoverForeground);
+		if (listHoverForegroundColor) {
+			collector.addRule(`
+				/* Override debug console foreground colors on hover so list.hoverForeground takes effect */
+				.monaco-workbench .repl .repl-tree .monaco-list-row:hover:not(.selected):not(.focused) .output .expression .value.info,
+				.monaco-workbench .repl .repl-tree .monaco-list-row:hover:not(.selected):not(.focused) .output .expression .value.warn,
+				.monaco-workbench .repl .repl-tree .monaco-list-row:hover:not(.selected):not(.focused) .output .expression .value.error,
+				.monaco-workbench .repl .repl-tree .monaco-list-row:hover:not(.selected):not(.focused) .output .expression .source {
+					color: ${listHoverForegroundColor};
+				}
+			`);
+		}
 
 		if (!theme.defines(debugConsoleInputIconForeground)) {
 			collector.addRule(`
