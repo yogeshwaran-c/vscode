@@ -225,7 +225,13 @@ export class TerminalService extends Disposable implements ITerminalService {
 		this._terminalEditorActive = TerminalContextKeys.terminalEditorActive.bindTo(this._contextKeyService);
 
 		this._register(this.onDidChangeActiveInstance(instance => {
-			this._terminalEditorActive.set(!!instance?.target && instance.target === TerminalLocation.Editor);
+			// Only set the context key to true here; setting it to false is the responsibility of
+			// TerminalEditorService which tracks the active editor. Without this separation, focusing
+			// the terminal panel overwrites the key to false even when a terminal editor is still
+			// the active editor in its group. See https://github.com/microsoft/vscode/issues/182979
+			if (instance?.target === TerminalLocation.Editor) {
+				this._terminalEditorActive.set(true);
+			}
 		}));
 
 		this._register(_lifecycleService.onBeforeShutdown(async e => e.veto(this._onBeforeShutdown(e.reason), 'veto.terminal')));
