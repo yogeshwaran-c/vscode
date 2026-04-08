@@ -174,9 +174,9 @@ export class FindInput extends Widget {
 			}));
 
 			// Arrow-Key support to navigate between options
-			const indexes = [this.caseSensitive.domNode, this.wholeWords.domNode, this.regex.domNode];
 			this.onkeydown(this.domNode, (event: IKeyboardEvent) => {
 				if (event.equals(KeyCode.LeftArrow) || event.equals(KeyCode.RightArrow) || event.equals(KeyCode.Escape)) {
+					const indexes = this.getOptionNavigationIndexes();
 					const index = indexes.indexOf(<HTMLElement>this.domNode.ownerDocument.activeElement);
 					if (index >= 0) {
 						let newIndex: number = -1;
@@ -244,6 +244,28 @@ export class FindInput extends Widget {
 
 	public get onDidChange(): Event<string> {
 		return this.inputBox.onDidChange;
+	}
+
+	/**
+	 * Returns the list of DOM elements that participate in left/right arrow key
+	 * navigation among the find input toggle buttons. Subclasses can override
+	 * this to include additional toggle-like controls.
+	 */
+	protected getOptionNavigationIndexes(): HTMLElement[] {
+		const indexes: HTMLElement[] = [];
+		if (this.caseSensitive) {
+			indexes.push(this.caseSensitive.domNode);
+		}
+		if (this.wholeWords) {
+			indexes.push(this.wholeWords.domNode);
+		}
+		if (this.regex) {
+			indexes.push(this.regex.domNode);
+		}
+		for (const toggle of this.additionalToggles) {
+			indexes.push(toggle.domNode);
+		}
+		return indexes;
 	}
 
 	public layout(style: { collapsedFindWidget: boolean; narrowFindWidget: boolean; reducedFindWidget: boolean }) {

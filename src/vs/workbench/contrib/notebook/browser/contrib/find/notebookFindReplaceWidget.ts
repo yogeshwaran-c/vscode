@@ -257,6 +257,17 @@ export class NotebookFindInput extends FindInput {
 		this.controls.appendChild(this._findFilter.container);
 	}
 
+	protected override getOptionNavigationIndexes(): HTMLElement[] {
+		const indexes = super.getOptionNavigationIndexes();
+		// Include the filter button's focusable element in arrow-key navigation
+		// so users can reach it with left/right arrow keys in addition to Tab.
+		const filterFocusable = this._findFilter.container.querySelector<HTMLElement>('a.action-label');
+		if (filterFocusable) {
+			indexes.push(filterFocusable);
+		}
+		return indexes;
+	}
+
 	override setEnabled(enabled: boolean) {
 		super.setEnabled(enabled);
 		if (enabled && !this._filterChecked) {
