@@ -3251,17 +3251,36 @@ export class Repository {
 		return this.getBranch(result.stdout.trim());
 	}
 
-	// TODO: Support core.commentChar
-	stripCommitMessageComments(message: string): string {
-		return message.replace(/^\s*#.*$\n?/gm, '').trim();
+	stripCommitMessageComments(message: string, commentChar = '#'): string {
+		// Escape special regex characters in the comment char
+		const escapedChar = commentChar.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+		return message.replace(new RegExp(`^\\s*${escapedChar}.*$\\n?`, 'gm'), '').trim();
+	}
+
+	private async getCommentChar(): Promise<string> {
+		try {
+			const result = await this.exec(['config', '--get', 'core.commentChar']);
+			const char = result.stdout.trim();
+			// When set to 'auto', git picks a character not in the commit message;
+			// fall back to the default '#' since we don't have the message at this point.
+			if (char && char !== 'auto') {
+				return char;
+			}
+		} catch {
+			// core.commentChar not set; use default
+		}
+		return '#';
 	}
 
 	async getSquashMessage(): Promise<string | undefined> {
 		const squashMsgPath = path.join(this.repositoryRoot, '.git', 'SQUASH_MSG');
 
 		try {
-			const raw = await fs.readFile(squashMsgPath, 'utf8');
-			return this.stripCommitMessageComments(raw);
+			const [raw, commentChar] = await Promise.all([
+				fs.readFile(squashMsgPath, 'utf8'),
+				this.getCommentChar(),
+			]);
+			return this.stripCommitMessageComments(raw, commentChar);
 		} catch {
 			return undefined;
 		}
@@ -3271,8 +3290,11 @@ export class Repository {
 		const mergeMsgPath = path.join(this.repositoryRoot, '.git', 'MERGE_MSG');
 
 		try {
-			const raw = await fs.readFile(mergeMsgPath, 'utf8');
-			return this.stripCommitMessageComments(raw);
+			const [raw, commentChar] = await Promise.all([
+				fs.readFile(mergeMsgPath, 'utf8'),
+				this.getCommentChar(),
+			]);
+			return this.stripCommitMessageComments(raw, commentChar);
 		} catch {
 			return undefined;
 		}
@@ -3295,8 +3317,11 @@ export class Repository {
 				templatePath = path.join(this.repositoryRoot, templatePath);
 			}
 
-			const raw = await fs.readFile(templatePath, 'utf8');
-			return this.stripCommitMessageComments(raw);
+			const [raw, commentChar] = await Promise.all([
+				fs.readFile(templatePath, 'utf8'),
+				this.getCommentChar(),
+			]);
+			return this.stripCommitMessageComments(raw, commentChar);
 		} catch (err) {
 			return '';
 		}
