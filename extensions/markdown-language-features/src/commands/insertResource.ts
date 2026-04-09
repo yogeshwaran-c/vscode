@@ -94,6 +94,7 @@ export class InsertHeaderLink implements Command {
 		const headers = this.#flattenHeaders(symbols);
 
 		if (!headers.length) {
+			vscode.window.showInformationMessage(vscode.l10n.t("No headers found in this document."));
 			return;
 		}
 
@@ -133,7 +134,9 @@ export class InsertHeaderLink implements Command {
 	#flattenHeaders(symbols: vscode.DocumentSymbol[]): { name: string }[] {
 		const result: { name: string }[] = [];
 		for (const symbol of symbols) {
-			result.push({ name: symbol.name });
+			if (symbol.kind === vscode.SymbolKind.String) {
+				result.push({ name: symbol.name });
+			}
 			if (symbol.children.length) {
 				result.push(...this.#flattenHeaders(symbol.children));
 			}
