@@ -31,7 +31,7 @@ import minimist from 'minimist';
 import { compileBuildWithoutManglingTask, compileBuildWithManglingTask } from './gulpfile.compile.ts';
 import { compileNonNativeExtensionsBuildTask, compileNativeExtensionsBuildTask, compileAllExtensionsBuildTask, compileExtensionMediaBuildTask, cleanExtensionsBuildTask } from './gulpfile.extensions.ts';
 import { copyCodiconsTask } from './lib/compilation.ts';
-import { getCopilotExcludeFilter, copyCopilotNativeDeps } from './lib/copilot.ts';
+import { getCopilotExcludeFilter, copyCopilotNativeDeps, prepareBuiltInCopilotExtensionShims } from './lib/copilot.ts';
 import type { EmbeddedProductInfo } from './lib/embeddedType.ts';
 import { useEsbuildTranspile } from './buildConfig.ts';
 import { promisify } from 'util';
@@ -393,8 +393,7 @@ function packageTask(platform: string, arch: string, sourceFolderName: string, d
 			}));
 
 
-		const isInsiderOrExploration = quality === 'insider' || quality === 'exploration';
-		const embedded = isInsiderOrExploration
+		const embedded = quality
 			? (product as typeof product & { embedded?: EmbeddedProductInfo }).embedded
 			: undefined;
 
@@ -556,8 +555,8 @@ function packageTask(platform: string, arch: string, sourceFolderName: string, d
 				'**',
 				'!LICENSE',
 				'!version',
-				...(platform === 'darwin' && !isInsiderOrExploration ? ['!**/Contents/Applications', '!**/Contents/Applications/**'] : []),
-				...(platform === 'win32' && !isInsiderOrExploration ? ['!**/electron_proxy.exe'] : []),
+				...(platform === 'darwin' && !quality ? ['!**/Contents/Applications', '!**/Contents/Applications/**'] : []),
+				...(platform === 'win32' && !quality ? ['!**/electron_proxy.exe'] : []),
 			], { dot: true }));
 
 		if (platform === 'linux') {
@@ -693,8 +692,11 @@ function copyCopilotNativeDepsTask(platform: string, arch: string, destinationFo
 		const appBase = platform === 'darwin'
 			? path.join(outputDir, `${product.nameLong}.app`, 'Contents', 'Resources', 'app')
 			: path.join(outputDir, versionedResourcesFolder, 'resources', 'app');
+		const appNodeModulesDir = path.join(appBase, 'node_modules');
+		copyCopilotNativeDeps(platform, arch, appNodeModulesDir);
 
-		copyCopilotNativeDeps(platform, arch, path.join(appBase, 'node_modules'));
+		const builtInCopilotExtensionDir = path.join(appBase, 'extensions', 'copilot');
+		prepareBuiltInCopilotExtensionShims(platform, arch, builtInCopilotExtensionDir, appNodeModulesDir);
 	};
 }
 
