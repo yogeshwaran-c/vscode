@@ -61,7 +61,7 @@ export class WorkspaceExtensionsConfigService extends Disposable implements IWor
 		this._register(fileService.onDidFilesChange(e => {
 			const workspace = workspaceContextService.getWorkspace();
 			if ((workspace.configuration && e.affects(workspace.configuration))
-				|| workspace.folders.some(folder => e.affects(folder.toResource(EXTENSIONS_CONFIG)))
+				|| workspace.folders.some(folder => folder.uri.path && e.affects(folder.toResource(EXTENSIONS_CONFIG)))
 			) {
 				this._onDidChangeExtensionsConfigs.fire();
 			}
