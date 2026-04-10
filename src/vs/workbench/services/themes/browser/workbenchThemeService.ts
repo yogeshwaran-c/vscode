@@ -349,6 +349,25 @@ export class WorkbenchThemeService extends Disposable implements IWorkbenchTheme
 			) {
 				this.restoreColorTheme();
 			}
+			// Keep the preferred theme settings in sync with workbench.colorTheme so that
+			// 'Toggle between Light/Dark Themes' returns to the user's most recently used theme.
+			if (e.affectsConfiguration(ThemeSettings.COLOR_THEME) && !this.settings.isDetectingColorScheme()) {
+				const newSettingId = this.configurationService.getValue<string>(ThemeSettings.COLOR_THEME);
+				const newTheme = this.colorThemeRegistry.findThemeBySettingsId(newSettingId);
+				if (newTheme) {
+					if (newTheme.type === ColorScheme.DARK) {
+						const current = this.configurationService.getValue<string>(ThemeSettings.PREFERRED_DARK_THEME);
+						if (current !== newSettingId) {
+							this.configurationService.updateValue(ThemeSettings.PREFERRED_DARK_THEME, newSettingId, ConfigurationTarget.USER);
+						}
+					} else if (newTheme.type === ColorScheme.LIGHT) {
+						const current = this.configurationService.getValue<string>(ThemeSettings.PREFERRED_LIGHT_THEME);
+						if (current !== newSettingId) {
+							this.configurationService.updateValue(ThemeSettings.PREFERRED_LIGHT_THEME, newSettingId, ConfigurationTarget.USER);
+						}
+					}
+				}
+			}
 			if (e.affectsConfiguration(ThemeSettings.FILE_ICON_THEME)) {
 				this.restoreFileIconTheme();
 			}
