@@ -12,6 +12,7 @@ import { getLanguageModelCache } from './languageModelCache';
 import { runSafeAsync } from './utils/runner';
 import { DiagnosticsSupport, registerDiagnosticsPullSupport, registerDiagnosticsPushSupport } from './utils/validation';
 import { getDocumentContext } from './utils/documentContext';
+import { isInsideComment } from './utils/comments';
 import { fetchDataProviders } from './customData';
 import { RequestService, getRequestService } from './requests';
 
@@ -199,6 +200,10 @@ export function startServer(connection: Connection, runtime: RuntimeEnvironment)
 		return runSafeAsync(runtime, async () => {
 			const document = documents.get(textDocumentPosition.textDocument.uri);
 			if (document) {
+				const supportsLineComments = document.languageId === 'scss' || document.languageId === 'less';
+				if (isInsideComment(document.getText(), document.offsetAt(textDocumentPosition.position), supportsLineComments)) {
+					return null;
+				}
 				const [settings,] = await Promise.all([getDocumentSettings(document), dataProvidersReady]);
 				const styleSheet = stylesheets.get(document);
 				const documentContext = getDocumentContext(document.uri, workspaceFolders);
