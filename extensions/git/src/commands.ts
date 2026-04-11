@@ -1325,6 +1325,17 @@ export class CommandCenter {
 			return;
 		}
 
+		// When opening a file from a diff editor's title action button, the diff editor
+		// may not be the currently active editor (the user may have focused another split).
+		// Determine the view column of the editor that is actually showing the source URI
+		// so the file opens in the same split as the diff editor, not the focused split.
+		let sourceViewColumn: ViewColumn | undefined;
+		if (arg instanceof Uri) {
+			sourceViewColumn = window.visibleTextEditors
+				.find(e => e.document.uri.toString() === arg.toString())
+				?.viewColumn;
+		}
+
 		const activeTextEditor = window.activeTextEditor;
 		// Must extract these now because opening a new document will change the activeTextEditor reference
 		const previousVisibleRanges = activeTextEditor?.visibleRanges;
@@ -1335,7 +1346,7 @@ export class CommandCenter {
 			const opts: TextDocumentShowOptions = {
 				preserveFocus,
 				preview: false,
-				viewColumn: ViewColumn.Active
+				viewColumn: sourceViewColumn ?? ViewColumn.Active
 			};
 
 			await commands.executeCommand('vscode.open', uri, {
