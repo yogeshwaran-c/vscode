@@ -102,10 +102,14 @@ export abstract class MediaPreview extends Disposable {
 
 		if (this._webviewEditor.active) {
 			this.previewState = PreviewState.Active;
+		} else {
+			this.previewState = PreviewState.Visible;
+		}
+
+		if (this._webviewEditor.visible) {
 			this._binarySizeStatusBarEntry.show(this, this._binarySize);
 		} else {
 			this._binarySizeStatusBarEntry.hide(this);
-			this.previewState = PreviewState.Visible;
 		}
 	}
 }

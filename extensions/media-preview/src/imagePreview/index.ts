@@ -165,7 +165,7 @@ class ImagePreview extends MediaPreview {
 			return;
 		}
 
-		if (this._webviewEditor.active) {
+		if (this._webviewEditor.visible) {
 			this.sizeStatusBarEntry.show(this, this._imageSize || '');
 			this.zoomStatusBarEntry.show(this, this._imageZoom || 'fit');
 		} else {
