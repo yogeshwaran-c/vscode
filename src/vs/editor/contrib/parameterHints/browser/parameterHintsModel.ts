@@ -58,6 +58,7 @@ export class ParameterHintsModel extends Disposable {
 	private readonly providers: LanguageFeatureRegistry<languages.SignatureHelpProvider>;
 
 	private triggerOnType = false;
+	private autoTriggerOnCursorInArgs = false;
 	private _state: ParameterHintState.State = ParameterHintState.Default;
 	private _pendingTriggers: TriggerContext[] = [];
 
@@ -294,11 +295,51 @@ export class ParameterHintsModel extends Disposable {
 	}
 
 	private onCursorChange(e: ICursorSelectionChangedEvent): void {
-		if (e.source === 'mouse') {
-			this.cancel();
-		} else if (this.isTriggered) {
+		if (this.isTriggered) {
 			this.trigger({ triggerKind: languages.SignatureHelpTriggerKind.ContentChange });
+		} else if (e.source === 'mouse') {
+			if (this.autoTriggerOnCursorInArgs && this.triggerOnType && this.isCursorInsideArgumentList()) {
+				this.trigger({ triggerKind: languages.SignatureHelpTriggerKind.Invoke });
+			} else {
+				this.cancel();
+			}
+		} else if (this.autoTriggerOnCursorInArgs && this.triggerOnType && this.isCursorInsideArgumentList()) {
+			this.trigger({ triggerKind: languages.SignatureHelpTriggerKind.Invoke });
 		}
+	}
+
+	private isCursorInsideArgumentList(): boolean {
+		const model = this.editor.getModel();
+		const position = this.editor.getPosition();
+		if (!model || !position) {
+			return false;
+		}
+		const text = model.getLineContent(position.lineNumber).substring(0, position.column - 1);
+		let depth = 0;
+		let inSingle = false;
+		let inDouble = false;
+		let inBacktick = false;
+		for (let i = 0; i < text.length; i++) {
+			const ch = text.charAt(i);
+			if (ch === '\\' && i + 1 < text.length) {
+				i++;
+				continue;
+			}
+			if (!inDouble && !inBacktick && ch === '\'') {
+				inSingle = !inSingle;
+			} else if (!inSingle && !inBacktick && ch === '"') {
+				inDouble = !inDouble;
+			} else if (!inSingle && !inDouble && ch === '`') {
+				inBacktick = !inBacktick;
+			} else if (!inSingle && !inDouble && !inBacktick) {
+				if (ch === '(') {
+					depth++;
+				} else if (ch === ')' && depth > 0) {
+					depth--;
+				}
+			}
+		}
+		return depth > 0;
 	}
 
 	private onModelContentChange(): void {
@@ -308,7 +349,9 @@ export class ParameterHintsModel extends Disposable {
 	}
 
 	private onEditorConfigurationChange(): void {
-		this.triggerOnType = this.editor.getOption(EditorOption.parameterHints).enabled;
+		const options = this.editor.getOption(EditorOption.parameterHints);
+		this.triggerOnType = options.enabled;
+		this.autoTriggerOnCursorInArgs = options.autoTriggerOnCursorInArgs;
 
 		if (!this.triggerOnType) {
 			this.cancel();

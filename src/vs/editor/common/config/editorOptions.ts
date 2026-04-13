@@ -3659,6 +3659,11 @@ export interface IEditorParameterHintOptions {
 	 * Defaults to false.
 	 */
 	cycle?: boolean;
+	/**
+	 * Automatically show parameter hints when the cursor enters an unmatched open parenthesis.
+	 * Defaults to false.
+	 */
+	autoTriggerOnCursorInArgs?: boolean;
 }
 
 /**
@@ -3671,7 +3676,8 @@ class EditorParameterHints extends BaseEditorOption<EditorOption.parameterHints,
 	constructor() {
 		const defaults: InternalParameterHintOptions = {
 			enabled: true,
-			cycle: true
+			cycle: true,
+			autoTriggerOnCursorInArgs: false
 		};
 		super(
 			EditorOption.parameterHints, 'parameterHints', defaults,
@@ -3686,6 +3692,11 @@ class EditorParameterHints extends BaseEditorOption<EditorOption.parameterHints,
 					default: defaults.cycle,
 					description: nls.localize('parameterHints.cycle', "Controls whether the parameter hints menu cycles or closes when reaching the end of the list.")
 				},
+				'editor.parameterHints.autoTriggerOnCursorInArgs': {
+					type: 'boolean',
+					default: defaults.autoTriggerOnCursorInArgs,
+					description: nls.localize('parameterHints.autoTriggerOnCursorInArgs', "Controls whether parameter hints are automatically shown when the cursor moves into an existing, unmatched opening parenthesis.")
+				},
 			}
 		);
 	}
@@ -3697,7 +3708,8 @@ class EditorParameterHints extends BaseEditorOption<EditorOption.parameterHints,
 		const input = _input as Unknown<IEditorParameterHintOptions>;
 		return {
 			enabled: boolean(input.enabled, this.defaultValue.enabled),
-			cycle: boolean(input.cycle, this.defaultValue.cycle)
+			cycle: boolean(input.cycle, this.defaultValue.cycle),
+			autoTriggerOnCursorInArgs: boolean(input.autoTriggerOnCursorInArgs, this.defaultValue.autoTriggerOnCursorInArgs)
 		};
 	}
 }
