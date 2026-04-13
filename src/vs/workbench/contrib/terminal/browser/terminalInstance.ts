@@ -974,7 +974,7 @@ export class TerminalInstance extends Disposable implements ITerminalInstance {
 		});
 	}
 
-	async runCommand(commandLine: string, shouldExecute: boolean, commandId?: string, forceBracketedPasteMode?: boolean): Promise<void> {
+	async runCommand(commandLine: string, shouldExecute: boolean, commandId?: string, forceBracketedPasteMode?: boolean, commandLineForMetadata?: string): Promise<void> {
 		let commandDetection = this.capabilities.get(TerminalCapability.CommandDetection);
 		const siInjectionEnabled = this._configurationService.getValue(TerminalSettingId.ShellIntegrationEnabled) === true;
 		const timeoutMs = getShellIntegrationTimeout(
@@ -1008,8 +1008,9 @@ export class TerminalInstance extends Disposable implements ITerminalInstance {
 		// If a command ID was provided and we have command detection, set it as the next command ID
 		// so it will be used when the shell sends the command start sequence
 		if (commandId && commandDetection) {
-			this.xterm?.shellIntegration.setNextCommandId(commandLine, commandId);
-			await this._processManager.setNextCommandId(commandLine, commandId);
+			const commandLineToReport = commandLineForMetadata ?? commandLine;
+			this.xterm?.shellIntegration.setNextCommandId(commandLineToReport, commandId);
+			await this._processManager.setNextCommandId(commandLineToReport, commandId);
 		}
 
 		// Determine whether to send ETX (ctrl+c) before running the command. Only do this when the
@@ -2817,12 +2818,12 @@ export class TerminalInstanceColorProvider implements IXtermColorProvider {
 	}
 
 	getBackgroundColor(theme: IColorTheme) {
-		if (this._target.object === TerminalLocation.Editor) {
-			return theme.getColor(editorBackground);
-		}
 		const terminalBackground = theme.getColor(TERMINAL_BACKGROUND_COLOR);
 		if (terminalBackground) {
 			return terminalBackground;
+		}
+		if (this._target.object === TerminalLocation.Editor) {
+			return theme.getColor(editorBackground);
 		}
 		const location = this._viewDescriptorService.getViewLocationById(TERMINAL_VIEW_ID)!;
 		if (location === ViewContainerLocation.Panel) {
