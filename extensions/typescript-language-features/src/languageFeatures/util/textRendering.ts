@@ -239,6 +239,11 @@ export function appendDocumentationAsMarkdown(
 	tags: readonly Proto.JSDocTagInfo[] | undefined,
 	converter: IFilePathToResourceConverter,
 ): vscode.MarkdownString {
+	// Allow a safe subset of html (such as `<img>`) in rendered JSDoc. The markdown
+	// renderer still sanitizes the output, so only tags/attributes allowed by the
+	// sanitizer are kept. See https://github.com/microsoft/vscode/issues/231792.
+	out.supportHtml = true;
+
 	if (documentation) {
 		out.appendMarkdown(asPlainTextWithLinks(documentation, converter));
 	}
