@@ -14,6 +14,10 @@ const lastKnownWorkspaceNodeStorageKey = 'typescript.lastKnownWorkspaceNode';
 type UseWorkspaceNodeState = undefined | boolean;
 type LastKnownWorkspaceNodeState = undefined | string;
 
+interface NodePathQuickPickItem extends vscode.QuickPickItem {
+	run(): Promise<string | undefined>;
+}
+
 export class NodeVersionManager extends Disposable {
 	private _currentVersion: string | undefined;
 
@@ -124,6 +128,61 @@ export class NodeVersionManager extends Disposable {
 		if (version !== undefined) {
 			this.updateActiveVersion(version);
 		}
+	}
+
+	public async promptUserForNodeVersion(): Promise<void> {
+		const workspaceVersion = vscode.workspace.isTrusted ? this.configuration.localNodePath : null;
+		const globalVersion = this.configuration.globalNodePath;
+
+		const items: NodePathQuickPickItem[] = [];
+
+		items.push({
+			label: (this._currentVersion === undefined ? '• ' : '') + vscode.l10n.t("Use VS Code's Bundled Node"),
+			description: vscode.l10n.t('Ignore any configured Node path'),
+			run: async () => {
+				if (workspaceVersion) {
+					await this.setUseWorkspaceNodeState(false, workspaceVersion);
+				}
+				return undefined;
+			},
+		});
+
+		if (globalVersion) {
+			items.push({
+				label: (this._currentVersion === globalVersion ? '• ' : '') + vscode.l10n.t('Use User Setting Node'),
+				description: globalVersion,
+				run: async () => globalVersion,
+			});
+		}
+
+		if (workspaceVersion) {
+			items.push({
+				label: (this._currentVersion === workspaceVersion ? '• ' : '') + vscode.l10n.t('Use Workspace Setting Node'),
+				description: workspaceVersion,
+				run: async () => {
+					const trusted = await vscode.workspace.requestWorkspaceTrust();
+					if (!trusted) {
+						return this._currentVersion;
+					}
+					await this.setUseWorkspaceNodeState(true, workspaceVersion);
+					return workspaceVersion;
+				},
+			});
+		}
+
+		if (!workspaceVersion && !globalVersion) {
+			vscode.window.showInformationMessage(vscode.l10n.t("No Node path is configured. Set 'typescript.tsserver.nodePath' to select a Node installation."));
+			return;
+		}
+
+		const selected = await vscode.window.showQuickPick<NodePathQuickPickItem>(items, {
+			placeHolder: vscode.l10n.t('Select the Node installation used to run TS Server'),
+		});
+		if (!selected) {
+			return;
+		}
+		const picked = await selected.run();
+		this.updateActiveVersion(picked);
 	}
 
 	private updateActiveVersion(pickedVersion: string | undefined): void {

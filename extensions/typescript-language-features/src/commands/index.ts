@@ -17,6 +17,7 @@ import { OpenTsServerLogCommand } from './openTsServerLog';
 import { ReloadJavaScriptProjectsCommand, ReloadTypeScriptProjectsCommand } from './reloadProject';
 import { RestartTsServerCommand } from './restartTsServer';
 import { SelectTypeScriptVersionCommand } from './selectTypeScriptVersion';
+import { SelectTypeScriptNodePathCommand } from './selectNodePath';
 import { TSServerRequestCommand } from './tsserverRequests';
 
 export function registerBaseCommands(
@@ -28,6 +29,7 @@ export function registerBaseCommands(
 	commandManager.register(new ReloadTypeScriptProjectsCommand(lazyClientHost));
 	commandManager.register(new ReloadJavaScriptProjectsCommand(lazyClientHost));
 	commandManager.register(new SelectTypeScriptVersionCommand(lazyClientHost));
+	commandManager.register(new SelectTypeScriptNodePathCommand(lazyClientHost));
 	commandManager.register(new OpenTsServerLogCommand(lazyClientHost));
 	commandManager.register(new RestartTsServerCommand(lazyClientHost));
 	commandManager.register(new TypeScriptGoToProjectConfigCommand(activeJsTsEditorTracker, lazyClientHost));
