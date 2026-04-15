@@ -163,6 +163,15 @@ export class WebviewViewPane extends ViewPane {
 		if (this.isBodyVisible()) {
 			this.activate();
 			this._webview.value?.claim(this, getWindow(this.element), undefined);
+			// Lay out the webview immediately after claiming so that it is
+			// positioned over the current view container before the next paint.
+			// Without this, the overlay container may briefly become visible at
+			// stale coordinates from a previous layout (for example, when the
+			// pane was last shown in a different part of the workbench), causing
+			// a one-frame flash in the wrong location. See #243038.
+			if (this._container) {
+				this.layoutWebview();
+			}
 		} else {
 			this._webview.value?.release(this);
 		}
