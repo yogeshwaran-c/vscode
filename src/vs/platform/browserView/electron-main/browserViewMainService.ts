@@ -3,12 +3,12 @@
  *  Licensed under the MIT License. See License.txt in the project root for license information.
  *--------------------------------------------------------------------------------------------*/
 
-import { Emitter, Event } from '../../../base/common/event.js';
+import { Event } from '../../../base/common/event.js';
 import { Disposable, DisposableMap } from '../../../base/common/lifecycle.js';
 import { VSBuffer } from '../../../base/common/buffer.js';
-import { IBrowserViewBounds, IBrowserViewState, IBrowserViewService, BrowserViewStorageScope, IBrowserViewCaptureScreenshotOptions, IBrowserViewFindInPageOptions, BrowserViewCommandId } from '../common/browserView.js';
+import { CancellationToken, CancellationTokenSource } from '../../../base/common/cancellation.js';
+import { IBrowserViewBounds, IBrowserViewState, IBrowserViewService, BrowserViewStorageScope, IBrowserViewCaptureScreenshotOptions, IBrowserViewFindInPageOptions, BrowserViewCommandId, IElementData } from '../common/browserView.js';
 import { clipboard, Menu, MenuItem } from 'electron';
-import { ICDPTarget, CDPBrowserVersion, CDPWindowBounds, CDPTargetInfo, ICDPConnection, ICDPBrowserTarget } from '../common/cdp/types.js';
 import { IEnvironmentMainService } from '../../environment/electron-main/environmentMainService.js';
 import { createDecorator, IInstantiationService } from '../../instantiation/common/instantiation.js';
 import { BrowserView } from './browserView.js';
@@ -16,12 +16,9 @@ import { generateUuid } from '../../../base/common/uuid.js';
 import { BrowserViewUri } from '../common/browserViewUri.js';
 import { IWindowsMainService } from '../../windows/electron-main/windows.js';
 import { BrowserSession } from './browserSession.js';
-import { IProductService } from '../../product/common/productService.js';
 import { IApplicationStorageMainService } from '../../storage/electron-main/storageMainService.js';
-import { CDPBrowserProxy } from '../common/cdp/proxy.js';
 import { IntegratedBrowserOpenSource, logBrowserOpen } from '../common/browserViewTelemetry.js';
 import { ITelemetryService } from '../../telemetry/common/telemetry.js';
-import { CancellationToken } from '../../../base/common/cancellation.js';
 import { localize } from '../../../nls.js';
 import { INativeHostMainService } from '../../native/electron-main/nativeHostMainService.js';
 import { ITextEditorOptions } from '../../editor/common/editor.js';
@@ -29,10 +26,13 @@ import { htmlAttributeEncodeValue } from '../../../base/common/strings.js';
 
 export const IBrowserViewMainService = createDecorator<IBrowserViewMainService>('browserViewMainService');
 
-export interface IBrowserViewMainService extends IBrowserViewService, ICDPBrowserTarget {
+export interface IBrowserViewMainService extends IBrowserViewService {
 	readonly _serviceBrand: undefined;
 
 	tryGetBrowserView(id: string): BrowserView | undefined;
+
+	/** Create a new target, open it in an editor, and return it. */
+	createTarget(url: string, browserContextId?: string, windowId?: number): Promise<BrowserView>;
 }
 
 export class BrowserViewMainService extends Disposable implements IBrowserViewMainService {
@@ -47,20 +47,13 @@ export class BrowserViewMainService extends Disposable implements IBrowserViewMa
 	}
 
 	private readonly browserViews = this._register(new DisposableMap<string, BrowserView>());
+	private readonly _activeTokens = new Map<number, CancellationTokenSource>();
 	private _keybindings: { [commandId: string]: string } = Object.create(null);
-
-	// ICDPBrowserTarget events
-	private readonly _onTargetCreated = this._register(new Emitter<BrowserView>());
-	readonly onTargetCreated: Event<BrowserView> = this._onTargetCreated.event;
-
-	private readonly _onTargetDestroyed = this._register(new Emitter<BrowserView>());
-	readonly onTargetDestroyed: Event<BrowserView> = this._onTargetDestroyed.event;
 
 	constructor(
 		@IEnvironmentMainService private readonly environmentMainService: IEnvironmentMainService,
 		@IInstantiationService private readonly instantiationService: IInstantiationService,
 		@IWindowsMainService private readonly windowsMainService: IWindowsMainService,
-		@IProductService private readonly productService: IProductService,
 		@ITelemetryService private readonly telemetryService: ITelemetryService,
 		@INativeHostMainService private readonly nativeHostMainService: INativeHostMainService,
 		@IApplicationStorageMainService private readonly applicationStorageMainService: IApplicationStorageMainService
@@ -91,57 +84,7 @@ export class BrowserViewMainService extends Disposable implements IBrowserViewMa
 		return this.browserViews.get(id);
 	}
 
-	// ICDPBrowserTarget implementation
-
-	getVersion(): CDPBrowserVersion {
-		return {
-			protocolVersion: '1.3',
-			product: `${this.productService.nameShort}/${this.productService.version}`,
-			revision: this.productService.commit || 'unknown',
-			userAgent: 'Electron',
-			jsVersion: process.versions.v8
-		};
-	}
-
-	getWindowForTarget(target: ICDPTarget): { windowId: number; bounds: CDPWindowBounds } {
-		if (!(target instanceof BrowserView)) {
-			throw new Error('Can only get window for targets created by this service');
-		}
-
-		const view = target.getWebContentsView();
-		const viewBounds = view.getBounds();
-		return {
-			windowId: 1,
-			bounds: {
-				left: viewBounds.x,
-				top: viewBounds.y,
-				width: viewBounds.width,
-				height: viewBounds.height,
-				windowState: 'normal'
-			}
-		};
-	}
-
-	async attach(): Promise<ICDPConnection> {
-		return new CDPBrowserProxy(this);
-	}
-
-	async getTargetInfo(): Promise<CDPTargetInfo> {
-		return {
-			targetId: 'browser',
-			type: 'browser',
-			title: this.getVersion().product,
-			url: '',
-			attached: true,
-			canAccessOpener: false
-		};
-	}
-
-	getTargets(): IterableIterator<BrowserView> {
-		return this.browserViews.values();
-	}
-
-	async createTarget(url: string, browserContextId?: string, windowId?: number): Promise<ICDPTarget> {
+	async createTarget(url: string, browserContextId?: string, windowId?: number): Promise<BrowserView> {
 		const browserSession = browserContextId ? BrowserSession.get(browserContextId) : undefined;
 
 		return this.openNew(url, {
@@ -150,51 +93,6 @@ export class BrowserViewMainService extends Disposable implements IBrowserViewMa
 			editorOptions: { preserveFocus: true },
 			source: 'cdpCreated'
 		});
-	}
-
-	async activateTarget(target: ICDPTarget): Promise<void> {
-		if (!(target instanceof BrowserView)) {
-			throw new Error('Can only activate targets created by this service');
-		}
-		// TODO@kycutler
-	}
-
-	async closeTarget(target: ICDPTarget): Promise<boolean> {
-		if (!(target instanceof BrowserView)) {
-			throw new Error('Can only close targets created by this service');
-		}
-
-		await this.destroyBrowserView(target.id);
-		return true;
-	}
-
-	// Browser context management
-
-	getBrowserContexts(): string[] {
-		return BrowserSession.getBrowserContextIds();
-	}
-
-	async createBrowserContext(): Promise<string> {
-		const browserSession = BrowserSession.getOrCreateEphemeral(generateUuid(), 'cdp-created');
-		return browserSession.id;
-	}
-
-	async disposeBrowserContext(browserContextId: string): Promise<void> {
-		if (!browserContextId.startsWith('cdp-created:')) {
-			throw new Error('Can only dispose browser contexts created via CDP');
-		}
-
-		const browserSession = BrowserSession.get(browserContextId);
-		if (!browserSession) {
-			throw new Error(`Browser context ${browserContextId} not found`);
-		}
-
-		// Close all targets in this context
-		for (const view of this.browserViews.values()) {
-			if (view.session === browserSession) {
-				await this.destroyBrowserView(view.id);
-			}
-		}
 	}
 
 	/**
@@ -304,8 +202,8 @@ export class BrowserViewMainService extends Disposable implements IBrowserViewMa
 		return this._getBrowserView(id).captureScreenshot(options);
 	}
 
-	async focus(id: string): Promise<void> {
-		return this._getBrowserView(id).focus();
+	async focus(id: string, force?: boolean): Promise<void> {
+		return this._getBrowserView(id).focus(force);
 	}
 
 	async findInPage(id: string, text: string, options?: IBrowserViewFindInPageOptions): Promise<void> {
@@ -351,8 +249,35 @@ export class BrowserViewMainService extends Disposable implements IBrowserViewMa
 		await browserSession.clearData();
 	}
 
+	async getConsoleLogs(id: string): Promise<string> {
+		return this._getBrowserView(id).getConsoleLogs();
+	}
+
+	async getElementData(id: string, cancellationId: number): Promise<IElementData | undefined> {
+		return this._makeCancellable(cancellationId, (token) => this._getBrowserView(id).getElementData(token));
+	}
+
+	async getFocusedElementData(id: string): Promise<IElementData | undefined> {
+		return this._getBrowserView(id).getFocusedElementData();
+	}
+
+	async cancel(cancellationId: number): Promise<void> {
+		this._activeTokens.get(cancellationId)?.cancel();
+	}
+
 	async updateKeybindings(keybindings: { [commandId: string]: string }): Promise<void> {
 		this._keybindings = keybindings;
+	}
+
+	private async _makeCancellable<T>(cancellationId: number, callback: (token: CancellationToken) => T | Promise<T>): Promise<T> {
+		const cts: CancellationTokenSource = new CancellationTokenSource();
+		this._activeTokens.set(cancellationId, cts);
+		try {
+			return await callback(cts.token);
+		} finally {
+			this._activeTokens.delete(cancellationId);
+			cts.dispose();
+		}
 	}
 
 	/**
@@ -376,9 +301,7 @@ export class BrowserViewMainService extends Disposable implements IBrowserViewMa
 		);
 		this.browserViews.set(id, view);
 
-		this._onTargetCreated.fire(view);
 		Event.once(view.onDidClose)(() => {
-			this._onTargetDestroyed.fire(view);
 			this.browserViews.deleteAndDispose(id);
 		});
 
@@ -398,7 +321,7 @@ export class BrowserViewMainService extends Disposable implements IBrowserViewMa
 			editorOptions: ITextEditorOptions;
 			source: IntegratedBrowserOpenSource;
 		}
-	): Promise<ICDPTarget> {
+	): Promise<BrowserView> {
 		const targetId = generateUuid();
 		const view = this.createBrowserView(targetId, session || BrowserSession.getOrCreateEphemeral(targetId));
 

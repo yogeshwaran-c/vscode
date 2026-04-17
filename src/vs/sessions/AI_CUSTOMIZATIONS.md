@@ -15,6 +15,8 @@ src/vs/workbench/contrib/chat/browser/aiCustomization/
 ├── aiCustomizationManagementEditor.ts          # SplitView list/editor
 ├── aiCustomizationManagementEditorInput.ts     # Singleton input
 ├── aiCustomizationListWidget.ts                # Search + grouped list + harness toggle
+├── aiCustomizationItemSource.ts                # Item pipeline: ICustomizationItem → IAICustomizationListItem view model
+├── promptsServiceCustomizationItemProvider.ts  # Adapts IPromptsService → ICustomizationItemProvider
 ├── aiCustomizationListWidgetUtils.ts           # List item helpers (truncation, etc.)
 ├── aiCustomizationDebugPanel.ts                # Debug diagnostics panel
 ├── aiCustomizationWorkspaceService.ts          # Core VS Code workspace service impl
@@ -29,10 +31,10 @@ src/vs/workbench/contrib/chat/browser/aiCustomization/
 
 src/vs/workbench/contrib/chat/common/
 ├── aiCustomizationWorkspaceService.ts          # IAICustomizationWorkspaceService + IStorageSourceFilter + BUILTIN_STORAGE
-└── customizationHarnessService.ts              # ICustomizationHarnessService + ISectionOverride + helpers
+└── customizationHarnessService.ts              # ICustomizationHarnessService + ICustomizationItem + ICustomizationItemProvider + helpers
 ```
 
-The tree view and overview live in `vs/sessions` (sessions window only):
+The tree view and overview live in `vs/sessions` (agent sessions window only):
 
 ```
 src/vs/sessions/contrib/aiCustomizationTreeView/browser/
@@ -61,12 +63,13 @@ src/vs/sessions/contrib/sessions/browser/
 
 The `IAICustomizationWorkspaceService` interface controls per-window behavior:
 
-| Property / Method | Core VS Code | Sessions Window |
+| Property / Method | Core VS Code | Agent Sessions Window |
 |----------|-------------|----------|
 | `managementSections` | All sections except Models | All sections except Models |
 | `getStorageSourceFilter(type)` | Delegates to `ICustomizationHarnessService` | Delegates to `ICustomizationHarnessService` |
 | `isSessionsWindow` | `false` | `true` |
 | `activeProjectRoot` | First workspace folder | Active session worktree |
+| `welcomePageFeatures` | Shows getting-started banner + per-card AI actions | Shows getting-started banner, hides per-card AI actions |
 
 ### ICustomizationHarnessService
 
@@ -97,6 +100,8 @@ Key properties on the harness descriptor:
 
 | Property | Purpose |
 |----------|--------|
+| `itemProvider` | `ICustomizationItemProvider` supplying items; when absent, falls back to `PromptsServiceCustomizationItemProvider` |
+| `syncProvider` | `ICustomizationSyncProvider` enabling local→remote sync checkboxes |
 | `hiddenSections` | Sidebar sections to hide (e.g. Claude: `[Prompts, Plugins]`) |
 | `workspaceSubpaths` | Restrict file creation/display to directories (e.g. Claude: `['.claude']`) |
 | `hideGenerateButton` | Replace "Generate X" sparkle button with "New X" |
@@ -156,59 +161,77 @@ Claude additionally applies:
 
 In core VS Code, customization items contributed by the default chat extension (`productService.defaultChatAgent.chatExtensionId`, typically `GitHub.copilot-chat`) are grouped under the "Built-in" header in the management editor list widget, separate from third-party "Extensions".
 
-This follows the same pattern as the MCP list widget, which determines grouping at the UI layer by inspecting collection sources. The list widget uses `IProductService` to identify the chat extension and sets `groupKey: BUILTIN_STORAGE` on matching items:
-
-- **Agents**: checks `agent.source.extensionId` against the chat extension ID
-- **Skills**: builds a URI→ExtensionIdentifier lookup from `listPromptFiles(PromptsType.skill)`, then checks each skill's URI
-- **Prompts**: checks `command.promptPath.extension?.identifier`
-- **Instructions/Hooks**: checks `item.extension?.identifier` via `IPromptPath`
-
-The underlying `storage` remains `PromptsStorage.extension` — the grouping is a UI-level override via `groupKey` that keeps `applyStorageSourceFilter` working with existing storage types while visually distinguishing chat-extension items from third-party extension items.
+`PromptsServiceCustomizationItemProvider` handles this via `applyBuiltinGroupKeys()`: it builds a URI→extension-ID lookup from prompt file metadata, then sets `groupKey: BUILTIN_STORAGE` on items whose extension matches the chat extension ID (checked via the shared `isChatExtensionItem()` utility). The underlying `storage` remains `PromptsStorage.extension` — the grouping is a `groupKey` override that keeps `applyStorageSourceFilter` working while visually distinguishing chat-extension items from third-party extension items.
 
 `BUILTIN_STORAGE` is defined in `aiCustomizationWorkspaceService.ts` (common layer) and re-exported by both `aiCustomizationManagement.ts` (browser) and `builtinPromptsStorage.ts` (sessions) for backward compatibility.
+
+### Management Editor Item Pipeline
+
+All customization sources — `IPromptsService`, extension-contributed providers, and AHP remote servers — produce items conforming to the same `ICustomizationItem` contract (defined in `customizationHarnessService.ts`). This contract carries `uri`, `type`, `name`, `description`, optional `storage`, `groupKey`, `badge`, and status fields.
+
+```
+promptsService ──→ PromptsServiceCustomizationItemProvider ──→ ICustomizationItem[]
+                                                                       │
+Extension Provider ───────────────────────────────────────→ ICustomizationItem[]
+                                                                       │
+AHP Remote Server ────────────────────────────────────────→ ICustomizationItem[]
+                                                                       │
+                                                                       ▼
+                                              CustomizationItemSource (aiCustomizationItemSource.ts)
+                                              ├── normalizes → IAICustomizationListItem[]
+                                              ├── expands hooks from file content
+                                              └── blends sync overlays when syncProvider present
+                                                                       │
+                                                                       ▼
+                                                              List Widget renders
+```
+
+**Key files:**
+
+- **`aiCustomizationItemSource.ts`** — The browser-side pipeline: `IAICustomizationListItem` (view model), `IAICustomizationItemSource` (data contract), `AICustomizationItemNormalizer` (maps `ICustomizationItem` → view model, inferring storage/grouping from URIs when the provider doesn't supply them), `ProviderCustomizationItemSource` (orchestrates provider + sync + normalizer), and shared utilities (`expandHookFileItems`, `getFriendlyName`, `isChatExtensionItem`).
+
+- **`promptsServiceCustomizationItemProvider.ts`** — Adapts `IPromptsService` to `ICustomizationItemProvider`. Reads agents, skills, instructions, hooks, and prompts from the core service, expands instruction categories and hook entries, applies harness-specific filters (storage sources, workspace subpaths, instruction file patterns), and returns `ICustomizationItem[]` with `storage` set from the authoritative promptsService metadata. Used as the default item provider for harnesses that don't supply their own.
+
+- **`customizationHarnessService.ts`** (common layer) — Defines `ICustomizationItem`, `ICustomizationItemProvider`, `ICustomizationSyncProvider`, and `IHarnessDescriptor`. A harness descriptor optionally carries an `itemProvider`; when absent, the widget falls back to `PromptsServiceCustomizationItemProvider`.
 
 ### AgenticPromptsService (Sessions)
 
 Sessions overrides `PromptsService` via `AgenticPromptsService` (in `promptsService.ts`):
 
 - **Discovery**: `AgenticPromptFilesLocator` scopes workspace folders to the active session's worktree
-- **Built-in prompts**: Discovers bundled `.prompt.md` files from `vs/sessions/prompts/` and surfaces them with `PromptsStorage.builtin` storage type
-- **User override**: Built-in prompts are omitted when a user or workspace prompt with the same name exists
+- **Built-in skills**: Discovers bundled `SKILL.md` files from `vs/sessions/skills/{name}/` and surfaces them with `PromptsStorage.builtin` storage type
+- **User override**: Built-in skills are omitted when a user or workspace skill with the same name exists
 - **Creation targets**: `getSourceFolders()` override replaces VS Code profile user roots with `~/.copilot/{subfolder}` for CLI compatibility
 - **Hook folders**: Falls back to `.github/hooks` in the active worktree
 
-### Built-in Prompts
+### Built-in Skills
 
-Prompt files bundled with the Sessions app live in `src/vs/sessions/prompts/`. They are:
+All built-in customizations bundled with the Sessions app are skills, living in `src/vs/sessions/skills/{name}/SKILL.md`. They are:
 
-- Discovered at runtime via `FileAccess.asFileUri('vs/sessions/prompts')`
+- Discovered at runtime via `FileAccess.asFileUri('vs/sessions/skills')`
 - Tagged with `PromptsStorage.builtin` storage type
 - Shown in a "Built-in" group in the AI Customization tree view and management editor
-- Filtered out when a user/workspace prompt shares the same clean name (override behavior)
-- Included in storage filters for prompts and CLI-user types
+- Filtered out when a user/workspace skill shares the same name (override behavior)
+- Skills with UI integrations (e.g. `act-on-feedback`, `generate-run-commands`) display a "UI Integration" badge in the management editor
+
+### UI Integration Badges
+
+Skills that are directly invoked by UI elements (toolbar buttons, menu items) are annotated with a "UI Integration" badge in the management editor. The mapping is provided by `IAICustomizationWorkspaceService.getSkillUIIntegrations()`, which the Sessions implementation populates with the relevant skill names and tooltip descriptions. The badge appears on both the built-in skill and any user/workspace override, ensuring users understand that overriding the skill affects a UI surface.
 
 ### Count Consistency
 
-`customizationCounts.ts` uses the **same data sources** as the list widget's `loadItems()`:
-
-| Type | Data Source | Notes |
-|------|-------------|-------|
-| Agents | `getCustomAgents()` | Parsed agents, not raw files |
-| Skills | `findAgentSkills()` | Parsed skills with frontmatter |
-| Prompts | `getPromptSlashCommands()` | Filters out skill-type commands |
-| Instructions | `listPromptFiles()` + `listAgentInstructions()` | Includes AGENTS.md, CLAUDE.md etc. |
-| Hooks | `listPromptFiles()` | Individual hooks parsed via `parseHooksFromFile()` |
+`customizationCounts.ts` uses the **same data sources** as the list widget. Both go through the active harness's `ICustomizationItemProvider` (or the `PromptsServiceCustomizationItemProvider` fallback), ensuring counts match what the list displays.
 
 ### Item Badges
 
-`IAICustomizationListItem.badge` is an optional string that renders as a small inline tag next to the item name (same visual style as the MCP "Bridged" badge). For context instructions, this badge shows the raw `applyTo` pattern (e.g. a glob like `**/*.ts`), while the tooltip (`badgeTooltip`) explains the behavior. The badge text is also included in search filtering.
+`IAICustomizationListItem.badge` is an optional string that renders as a small inline tag next to the item name (same visual style as the MCP "Bridged" badge). For context instructions, this badge shows the raw `applyTo` pattern (e.g. a glob like `**/*.ts`), while the tooltip (`badgeTooltip`) explains the behavior. For skills with UI integrations, the badge reads "UI Integration" with a tooltip describing which UI surface invokes the skill. The badge text is also included in search filtering.
 
 ### Debug Panel
 
-Toggle via Command Palette: "Toggle Customizations Debug Panel". Shows a 4-stage pipeline view:
+Toggle via Command Palette: "Toggle Customizations Debug Panel". Shows a diagnostic view of the item pipeline:
 
-1. **Raw PromptsService data** — per-storage file lists + type-specific extras
-2. **After applyStorageSourceFilter** — what was removed and why
+1. **Provider data** — items returned by the active `ICustomizationItemProvider`
+2. **After filtering** — what was removed by storage source and workspace subpath filters
 3. **Widget state** — allItems vs displayEntries with group counts
 4. **Source/resolved folders** — creation targets and discovery order
 
@@ -223,13 +246,19 @@ Browser compatibility is required — no Node.js APIs.
 
 ## Feature Gating
 
-All commands and UI respect `ChatContextKeys.enabled` and the `chat.customizationsMenu.enabled` setting.
+All commands and UI respect `ChatContextKeys.enabled`.
+
+### Commands
+
+| Command ID | Purpose |
+|-----------|---------|
+| `aiCustomization.openManagementEditor` | Opens the management editor, optionally accepting an `AICustomizationManagementSection` to deep-link |
+| `aiCustomization.openMarketplace` | Opens the management editor with marketplace browse mode active. Accepts an optional section (`mcpServers` or `plugins`); defaults to `mcpServers` |
 
 ## Settings
 
-Settings use the `chat.customizationsMenu.` and `chat.customizations.` namespaces:
+User-facing settings use the `chat.customizations.` namespace:
 
 | Setting | Default | Description |
 |---------|---------|-------------|
-| `chat.customizationsMenu.enabled` | `true` | Show the Chat Customizations editor in the Command Palette |
 | `chat.customizations.harnessSelector.enabled` | `true` | Show the harness selector dropdown in the sidebar |
