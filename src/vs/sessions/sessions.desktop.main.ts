@@ -57,7 +57,6 @@ import '../workbench/services/mcp/electron-browser/mcpGalleryManifestService.js'
 import '../workbench/services/mcp/electron-browser/mcpWorkbenchManagementService.js';
 import '../workbench/services/encryption/electron-browser/encryptionService.js';
 import '../workbench/services/imageResize/electron-browser/imageResizeService.js';
-import '../workbench/services/browserElements/electron-browser/browserElementsService.js';
 import '../workbench/services/secrets/electron-browser/secretStorageService.js';
 import '../workbench/services/localization/electron-browser/languagePackService.js';
 import '../workbench/services/telemetry/electron-browser/telemetryService.js';
@@ -89,6 +88,7 @@ import '../workbench/services/extensions/electron-browser/nativeExtensionService
 import '../platform/userDataProfile/electron-browser/userDataProfileStorageService.js';
 import '../workbench/services/auxiliaryWindow/electron-browser/auxiliaryWindowService.js';
 import '../platform/extensionManagement/electron-browser/extensionsProfileScannerService.js';
+import '../platform/sandbox/electron-browser/sandboxHelperService.js';
 import '../platform/webContentExtractor/electron-browser/webContentExtractorService.js';
 import '../workbench/services/browserView/electron-browser/playwrightWorkbenchService.js';
 import '../workbench/services/process/electron-browser/processService.js';
@@ -178,6 +178,7 @@ import '../workbench/contrib/remoteTunnel/electron-browser/remoteTunnel.contribu
 // Chat
 import '../workbench/contrib/chat/electron-browser/chat.contribution.js';
 import './contrib/agentFeedback/browser/agentFeedback.contribution.js';
+import './contrib/chat/electron-browser/openInVSCode.contribution.js';
 
 // Encryption
 import '../workbench/contrib/encryption/electron-browser/encryption.contribution.js';
@@ -199,7 +200,17 @@ import '../workbench/contrib/policyExport/electron-browser/policyExport.contribu
 // Remote Agent Host
 import '../platform/agentHost/electron-browser/agentHostService.js';
 import '../platform/agentHost/electron-browser/remoteAgentHostService.js';
+import '../platform/agentHost/electron-browser/sshRemoteAgentHostService.js';
+import './contrib/remoteAgentHost/electron-browser/tunnelAgentHostService.js';
 import './contrib/remoteAgentHost/browser/remoteAgentHost.contribution.js';
+import './contrib/remoteAgentHost/browser/remoteAgentHostTerminal.contribution.js';
+import './contrib/remoteAgentHost/browser/tunnelAgentHost.contribution.js';
+
+// Local Agent Host
+import './contrib/localAgentHost/browser/localAgentHost.contribution.js';
+
+// Tunnel Host (allow remote connections to local agent host)
+import './contrib/tunnelHost/electron-browser/tunnelHost.contribution.js';
 
 //#endregion
 

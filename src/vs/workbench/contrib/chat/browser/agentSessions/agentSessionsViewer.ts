@@ -50,6 +50,7 @@ import { Button } from '../../../../../base/browser/ui/button/button.js';
 import { defaultButtonStyles } from '../../../../../platform/theme/browser/defaultStyles.js';
 import { AgentSessionApprovalModel } from './agentSessionApprovalModel.js';
 import { BugIndicatingError } from '../../../../../base/common/errors.js';
+import { compareIgnoreCase } from '../../../../../base/common/strings.js';
 
 export type AgentSessionListItem = IAgentSession | IAgentSessionSection | IAgentSessionShowMore | IAgentSessionShowLess;
 
@@ -324,9 +325,13 @@ export class AgentSessionRenderer extends Disposable implements ICompressibleTre
 		// When grouped by repository, hide the badge only if the name it shows
 		// matches the section header (i.e. the repository name for this session).
 		// Badges with a different name (e.g. worktree name) are still shown.
-		// Archived sessions always keep their badge since they are grouped under
-		// the "Archived" section, not a repository section.
-		if (this.options.isGroupedByRepository?.() && !session.element.isArchived()) {
+		// Pinned and archived sessions always keep their badge since they are
+		// grouped under their own section, not a repository section.
+		if (
+			this.options.isGroupedByRepository?.() &&
+			!session.element.isArchived() &&
+			!session.element.isPinned()
+		) {
 			const raw = typeof badge === 'string' ? badge : badge.value;
 			const match = raw.match(/^\$\((?:repo|folder|worktree)\)\s*(.+)/);
 			if (match) {
@@ -398,15 +403,15 @@ export class AgentSessionRenderer extends Disposable implements ICompressibleTre
 
 	private getIcon(session: IAgentSession, statusOnly?: boolean): ThemeIcon {
 		if (session.status === AgentSessionStatus.InProgress) {
-			return Codicon.sessionInProgress;
+			return { ...Codicon.sessionInProgress, color: themeColorFromId('textLink.foreground') };
 		}
 
 		if (session.status === AgentSessionStatus.NeedsInput) {
-			return Codicon.circleFilled;
+			return { ...Codicon.circleFilled, color: themeColorFromId('list.warningForeground') };
 		}
 
 		if (session.status === AgentSessionStatus.Failed) {
-			return Codicon.error;
+			return { ...Codicon.error, color: themeColorFromId('errorForeground') };
 		}
 
 		if (statusOnly) {
@@ -428,18 +433,18 @@ export class AgentSessionRenderer extends Disposable implements ICompressibleTre
 		}
 
 		if (!session.isRead() && !session.isArchived()) {
-			return Codicon.circleFilled;
+			return { ...Codicon.circleFilled, color: themeColorFromId('textLink.foreground') };
 		}
 
 		if (!statusOnly && session.providerType === AgentSessionProviders.Local) {
-			return Codicon.circleSmallFilled;
+			return { ...Codicon.circleSmallFilled, color: themeColorFromId('agentSessionReadIndicator.foreground') };
 		}
 
 		if (!statusOnly) {
 			return session.icon;
 		}
 
-		return Codicon.circleSmallFilled;
+		return { ...Codicon.circleSmallFilled, color: themeColorFromId('agentSessionReadIndicator.foreground') };
 	}
 
 	private renderDescription(session: ITreeNode<IAgentSession, FuzzyScore>, template: IAgentSessionItemTemplate): boolean {
@@ -476,7 +481,13 @@ export class AgentSessionRenderer extends Disposable implements ICompressibleTre
 
 	private renderStatus(session: ITreeNode<IAgentSession, FuzzyScore>, template: IAgentSessionItemTemplate): boolean {
 
-		const getTimeLabel = (session: IAgentSession) => {
+		// Show repository name for pinned sessions when grouped by repository,
+		// since they are not placed under a repository section header.
+		const repoPrefix = (session.element.isPinned() && this.options.isGroupedByRepository?.())
+			? getRepositoryName(session.element)
+			: undefined;
+
+		const getStatusText = (session: IAgentSession) => {
 			let timeLabel: string | undefined;
 			if (session.status === AgentSessionStatus.InProgress && session.timing.lastRequestStarted) {
 				timeLabel = this.toDuration(session.timing.lastRequestStarted, Date.now(), false, false);
@@ -494,13 +505,13 @@ export class AgentSessionRenderer extends Disposable implements ICompressibleTre
 				}
 			}
 
-			return timeLabel;
+			return repoPrefix ? `${repoPrefix} \u00B7 ${timeLabel}` : timeLabel;
 		};
 
 		// Time label
-		template.statusTime.textContent = getTimeLabel(session.element);
+		template.statusTime.textContent = getStatusText(session.element);
 		const timer = template.elementDisposable.add(new IntervalTimer());
-		timer.cancelAndSet(() => template.statusTime.textContent = getTimeLabel(session.element), session.element.status === AgentSessionStatus.InProgress ? 1000 /* every second */ : 60 * 1000 /* every minute */);
+		timer.cancelAndSet(() => template.statusTime.textContent = getStatusText(session.element), session.element.status === AgentSessionStatus.InProgress ? 1000 /* every second */ : 60 * 1000 /* every minute */);
 
 		return true;
 	}
@@ -889,7 +900,11 @@ export class AgentSessionsAccessibilityProvider implements IListAccessibilityPro
 
 	getAriaLabel(element: AgentSessionListItem): string | null {
 		if (isAgentSessionSection(element)) {
-			return localize('agentSessionSectionAriaLabel', "{0} sessions section, {1} sessions", element.label, element.sessions.length);
+			const count = element.sessions.length;
+			if (count === 1) {
+				return localize('agentSessionSectionAriaLabel.singular', "{0} sessions section, {1} session", element.label, count);
+			}
+			return localize('agentSessionSectionAriaLabel.plural', "{0} sessions section, {1} sessions", element.label, count);
 		}
 
 		if (isAgentSessionShowMore(element)) {
@@ -1182,15 +1197,13 @@ export class AgentSessionsDataSource extends Disposable implements IAsyncDataSou
 
 		const result: AgentSessionListItem[] = [];
 
-		if (pinnedSessions.length > 0) {
-			result.push({
-				section: AgentSessionSection.Pinned,
-				label: AgentSessionSectionLabels[AgentSessionSection.Pinned],
-				sessions: pinnedSessions,
-			});
-		}
+		// Pinned sessions are added directly (no section header) so they
+		// appear at the top without a "PINNED" group label.
+		result.push(...pinnedSessions);
 
-		for (const [, { label, sessions }] of repoMap) {
+		const sortedRepoGroups = [...repoMap.values()].sort((a, b) => compareIgnoreCase(a.label, b.label));
+
+		for (const { label, sessions } of sortedRepoGroups) {
 			result.push({
 				section: AgentSessionSection.Repository,
 				label,
@@ -1543,16 +1556,16 @@ export class AgentSessionsSorter implements ITreeSorter<IAgentSession> {
 
 		// Sort by time
 		const sortBy = this.getSortBy();
-		const timeA = prioritizeActiveSessions
-			? sessionA.timing.lastRequestStarted ?? sessionA.timing.created
-			: sortBy === AgentSessionsSorting.Updated
-				? sessionA.timing.lastRequestEnded ?? sessionA.timing.created
-				: sessionA.timing.created;
-		const timeB = prioritizeActiveSessions
-			? sessionB.timing.lastRequestStarted ?? sessionB.timing.created
-			: sortBy === AgentSessionsSorting.Updated
-				? sessionB.timing.lastRequestEnded ?? sessionB.timing.created
-				: sessionB.timing.created;
+		const timeA = sortBy === AgentSessionsSorting.Updated
+			? (prioritizeActiveSessions
+				? sessionA.timing.lastRequestStarted ?? sessionA.timing.created
+				: sessionA.timing.lastRequestEnded ?? sessionA.timing.created)
+			: sessionA.timing.created;
+		const timeB = sortBy === AgentSessionsSorting.Updated
+			? (prioritizeActiveSessions
+				? sessionB.timing.lastRequestStarted ?? sessionB.timing.created
+				: sessionB.timing.lastRequestEnded ?? sessionB.timing.created)
+			: sessionB.timing.created;
 		return timeB - timeA;
 	}
 }

@@ -23,7 +23,7 @@ import { Menus } from '../../../browser/menus.js';
 import { IChatEditingService } from '../../../../workbench/contrib/chat/common/editing/chatEditingService.js';
 import { ICodeReviewService } from '../../codeReview/browser/codeReviewService.js';
 import { getSessionEditorComments } from './sessionEditorComments.js';
-import { ISessionsManagementService } from '../../sessions/browser/sessionsManagementService.js';
+import { ISessionsManagementService } from '../../../services/sessions/common/sessionsManagement.js';
 
 export const submitFeedbackActionId = 'agentFeedbackEditor.action.submit';
 export const navigatePreviousFeedbackActionId = 'agentFeedbackEditor.action.navigatePrevious';
@@ -124,7 +124,7 @@ class SubmitFeedbackAction extends AgentFeedbackEditorAction {
 			await editorService.closeEditors(editorsToClose);
 		}
 
-		await widget.acceptInput('act on feedback'); // move to use /act-on-feedback when the bug is fixed
+		await widget.acceptInput('/act-on-feedback');
 	}
 }
 
@@ -245,7 +245,7 @@ class SubmitActiveSessionFeedbackAction extends Action2 {
 			await editorService.closeEditors(editorsToClose);
 		}
 
-		await widget.acceptInput('act on feedback');
+		await widget.acceptInput('/act-on-feedback');
 	}
 }
 

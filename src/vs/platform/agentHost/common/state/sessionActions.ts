@@ -21,6 +21,7 @@ export {
 	type IRootActiveSessionsChangedAction,
 	type ISessionCreationFailedAction,
 	type ISessionDeltaAction,
+	type ISessionDiffsChangedAction,
 	type ISessionErrorAction,
 	type ISessionModelChangedAction,
 	type ISessionReadyAction,
@@ -42,6 +43,16 @@ export {
 	type ISessionServerToolsChangedAction,
 	type ISessionActiveClientChangedAction,
 	type ISessionActiveClientToolsChangedAction,
+	type ISessionCustomizationsChangedAction,
+	type ISessionCustomizationToggledAction,
+	type ISessionPendingMessageSetAction,
+	type ISessionPendingMessageRemovedAction,
+	type ISessionQueuedMessagesReorderedAction,
+	type ISessionInputRequestedAction,
+	type ISessionInputCompletedAction,
+	type ISessionIsReadChangedAction,
+	type ISessionIsDoneChangedAction,
+	type ISessionToolCallContentChangedAction,
 	type IStateAction,
 } from './protocol/actions.js';
 
@@ -63,8 +74,10 @@ import type {
 	ISessionModelChangedAction,
 	ISessionReasoningAction,
 	ISessionResponsePartAction,
+	ISessionToolCallApprovedAction,
 	ISessionToolCallCompleteAction,
 	ISessionToolCallConfirmedAction,
+	ISessionToolCallDeniedAction,
 	ISessionToolCallDeltaAction,
 	ISessionToolCallReadyAction,
 	ISessionToolCallResultConfirmedAction,
@@ -75,15 +88,22 @@ import type {
 	ISessionTurnStartedAction,
 	ISessionUsageAction,
 	IStateAction,
+	ISessionPendingMessageSetAction,
+	ISessionPendingMessageRemovedAction,
+	ISessionQueuedMessagesReorderedAction,
+	ISessionIsReadChangedAction,
+	ISessionIsDoneChangedAction,
 } from './protocol/actions.js';
 
 import type { IProtocolNotification } from './protocol/notifications.js';
-import type { IRootAction as IRootAction_, ISessionAction as ISessionAction_, IClientSessionAction as IClientSessionAction_, IServerSessionAction as IServerSessionAction_ } from './protocol/action-origin.generated.js';
+import type { IRootAction as IRootAction_, ISessionAction as ISessionAction_, IClientSessionAction as IClientSessionAction_, IServerSessionAction as IServerSessionAction_, ITerminalAction as ITerminalAction_, IClientTerminalAction as IClientTerminalAction_ } from './protocol/action-origin.generated.js';
 
 export type IRootAction = IRootAction_;
 export type ISessionAction = ISessionAction_;
 export type IClientSessionAction = IClientSessionAction_;
 export type IServerSessionAction = IServerSessionAction_;
+export type ITerminalAction = ITerminalAction_;
+export type IClientTerminalAction = IClientTerminalAction_;
 
 // Root actions
 export type IAgentsChangedAction = IRootAgentsChangedAction;
@@ -96,8 +116,8 @@ export type IResponsePartAction = ISessionResponsePartAction;
 export type IToolCallStartAction = ISessionToolCallStartAction;
 export type IToolCallDeltaAction = ISessionToolCallDeltaAction;
 export type IToolCallReadyAction = ISessionToolCallReadyAction;
-export type IToolCallApprovedAction = import('./protocol/actions.js').ISessionToolCallApprovedAction;
-export type IToolCallDeniedAction = import('./protocol/actions.js').ISessionToolCallDeniedAction;
+export type IToolCallApprovedAction = ISessionToolCallApprovedAction;
+export type IToolCallDeniedAction = ISessionToolCallDeniedAction;
 export type IToolCallConfirmedAction = ISessionToolCallConfirmedAction;
 export type IToolCallCompleteAction = ISessionToolCallCompleteAction;
 export type IToolCallResultConfirmedAction = ISessionToolCallResultConfirmedAction;
@@ -107,6 +127,14 @@ export type ITitleChangedAction = ISessionTitleChangedAction;
 export type IUsageAction = ISessionUsageAction;
 export type IReasoningAction = ISessionReasoningAction;
 export type IModelChangedAction = ISessionModelChangedAction;
+export type ICustomizationsChangedAction = import('./protocol/actions.js').ISessionCustomizationsChangedAction;
+export type ICustomizationToggledAction = import('./protocol/actions.js').ISessionCustomizationToggledAction;
+
+export type IPendingMessageSetAction = ISessionPendingMessageSetAction;
+export type IPendingMessageRemovedAction = ISessionPendingMessageRemovedAction;
+export type IQueuedMessagesReorderedAction = ISessionQueuedMessagesReorderedAction;
+export type IIsReadChangedAction = ISessionIsReadChangedAction;
+export type IIsDoneChangedAction = ISessionIsDoneChangedAction;
 
 // Notifications
 export type INotification = IProtocolNotification;
@@ -119,4 +147,8 @@ export function isRootAction(action: IStateAction): action is IRootAction {
 
 export function isSessionAction(action: IStateAction): action is ISessionAction {
 	return action.type.startsWith('session/');
+}
+
+export function isTerminalAction(action: IStateAction): action is ITerminalAction {
+	return action.type.startsWith('terminal/');
 }
