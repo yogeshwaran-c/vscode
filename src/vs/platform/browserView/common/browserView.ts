@@ -47,6 +47,24 @@ export enum BrowserViewCommandId {
 	FindPrevious = `${commandPrefix}.findPrevious`,
 }
 
+export interface IElementAncestor {
+	readonly tagName: string;
+	readonly id?: string;
+	readonly classNames?: string[];
+}
+
+export interface IElementData {
+	readonly url?: string;
+	readonly outerHTML: string;
+	readonly computedStyle: string;
+	readonly bounds: { readonly x: number; readonly y: number; readonly width: number; readonly height: number };
+	readonly ancestors?: IElementAncestor[];
+	readonly attributes?: Record<string, string>;
+	readonly computedStyles?: Record<string, string>;
+	readonly dimensions?: { readonly top: number; readonly left: number; readonly width: number; readonly height: number };
+	readonly innerText?: string;
+}
+
 export interface IBrowserViewBounds {
 	windowId: number;
 	x: number;
@@ -59,7 +77,8 @@ export interface IBrowserViewBounds {
 
 export interface IBrowserViewCaptureScreenshotOptions {
 	quality?: number;
-	rect?: { x: number; y: number; width: number; height: number };
+	screenRect?: { x: number; y: number; width: number; height: number };
+	pageRect?: { x: number; y: number; width: number; height: number };
 }
 
 export interface IBrowserViewState {
@@ -307,8 +326,9 @@ export interface IBrowserViewService {
 	/**
 	 * Focus the browser view
 	 * @param id The browser view identifier
+	 * @param force Whether to force focus even if the view's window is not focused.
 	 */
-	focus(id: string): Promise<void>;
+	focus(id: string, force?: boolean): Promise<void>;
 
 	/**
 	 * Find text in the browser view's page
@@ -370,6 +390,36 @@ export interface IBrowserViewService {
 	 * @param fingerprint The SHA-256 fingerprint of the certificate to revoke
 	 */
 	untrustCertificate(id: string, host: string, fingerprint: string): Promise<void>;
+
+	/**
+	 * Get captured console logs for a browser view.
+	 * Console messages are automatically captured from the moment the view is created.
+	 * @param id The browser view identifier
+	 * @returns The captured console logs as a single string
+	 */
+	getConsoleLogs(id: string): Promise<string>;
+
+	/**
+	 * Start element inspection mode in a browser view. Sets up a CDP overlay that
+	 * highlights elements on hover. When the user clicks an element, its data is
+	 * returned and the overlay is removed.
+	 * @param id The browser view identifier
+	 * @param cancellationId An identifier that can be passed to {@link cancel} to abort
+	 * @returns The inspected element data, or undefined if cancelled
+	 */
+	getElementData(id: string, cancellationId: number): Promise<IElementData | undefined>;
+
+	/**
+	 * Get element data for the currently focused element in the browser view.
+	 * @param id The browser view identifier
+	 * @returns The focused element's data, or undefined if no element is focused
+	 */
+	getFocusedElementData(id: string): Promise<IElementData | undefined>;
+
+	/**
+	 * Cancel an in-progress request.
+	 */
+	cancel(cancellationId: number): Promise<void>;
 
 	/**
 	 * Update the keybinding accelerators used in browser view context menus.

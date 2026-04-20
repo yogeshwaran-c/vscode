@@ -3,163 +3,283 @@
  *  Licensed under the MIT License. See License.txt in the project root for license information.
  *--------------------------------------------------------------------------------------------*/
 
+import { generateUuid } from '../../../base/common/uuid.js';
 import type {
-	IAgentProgressEvent,
-	IAgentToolStartEvent,
-	IAgentToolCompleteEvent,
-	IAgentPermissionRequestEvent,
-	IAgentErrorEvent,
-	IAgentReasoningEvent,
-	IAgentUsageEvent,
 	IAgentDeltaEvent,
+	IAgentErrorEvent,
+	IAgentMessageEvent,
+	IAgentProgressEvent,
+	IAgentReasoningEvent,
 	IAgentTitleChangedEvent,
+	IAgentToolCompleteEvent,
+	IAgentToolContentChangedEvent,
+	IAgentToolStartEvent,
+	IAgentUsageEvent,
+	IAgentUserInputRequestEvent
 } from '../common/agentService.js';
 import {
 	ActionType,
 	type ISessionAction,
-	type IDeltaAction,
-	type IToolCallStartAction,
-	type IToolCallReadyAction,
-	type IToolCallCompleteAction,
-	type ITurnCompleteAction,
 	type ISessionErrorAction,
-	type IUsageAction,
+	type ISessionInputRequestedAction,
 	type ITitleChangedAction,
-	type IPermissionRequestAction,
-	type IReasoningAction,
+	type IToolCallCompleteAction,
+	type IToolCallReadyAction,
+	type IToolCallStartAction,
+	type ISessionToolCallContentChangedAction,
+	type ITurnCompleteAction,
+	type IUsageAction
 } from '../common/state/sessionActions.js';
-import { ToolCallConfirmationReason, type URI } from '../common/state/sessionState.js';
+import { ResponsePartKind, ToolCallConfirmationReason, type URI } from '../common/state/sessionState.js';
 
 /**
- * Maps a flat {@link IAgentProgressEvent} from the agent host into
- * protocol {@link ISessionAction}(s) suitable for dispatch to the reducer.
+ * Stateful mapper that tracks the "current" markdown and reasoning response
+ * parts per session/turn so that streaming deltas can be routed to the correct
+ * part via `partId`.
  *
- * Returns `undefined` for events that have no corresponding action.
- * May return an array when a single SDK event maps to multiple protocol actions
- * (e.g. `tool_start` → `toolCallStart` + `toolCallReady`).
+ * Call {@link reset} when a new turn starts to clear tracked part IDs.
  */
-export function mapProgressEventToActions(event: IAgentProgressEvent, session: URI, turnId: string): ISessionAction | ISessionAction[] | undefined {
-	switch (event.type) {
-		case 'delta':
-			return {
-				type: ActionType.SessionDelta,
-				session,
-				turnId,
-				content: (event as IAgentDeltaEvent).content,
-			} satisfies IDeltaAction;
+export class AgentEventMapper {
+	/** Current markdown part ID per session. Reset on each new turn. */
+	private readonly _currentMarkdownPartId = new Map<string, string>();
+	/** Current reasoning part ID per session. Reset on each new turn. */
+	private readonly _currentReasoningPartId = new Map<string, string>();
 
-		case 'tool_start': {
-			// The Copilot SDK provides full parameters at tool_start time.
-			// We emit both toolCallStart (streaming → created) and toolCallReady
-			// (params complete → running with auto-confirm) as a pair.
-			const e = event as IAgentToolStartEvent;
-			const startAction: IToolCallStartAction = {
-				type: ActionType.SessionToolCallStart,
-				session,
-				turnId,
-				toolCallId: e.toolCallId,
-				toolName: e.toolName,
-				displayName: e.displayName,
-				_meta: { toolKind: e.toolKind, language: e.language },
-			};
-			const readyAction: IToolCallReadyAction = {
-				type: ActionType.SessionToolCallReady,
-				session,
-				turnId,
-				toolCallId: e.toolCallId,
-				invocationMessage: e.invocationMessage,
-				toolInput: e.toolInput,
-				confirmed: ToolCallConfirmationReason.NotNeeded,
-			};
-			return [startAction, readyAction];
-		}
+	/**
+	 * Resets tracked part IDs for a session (call when a new turn starts).
+	 */
+	reset(session: string): void {
+		this._currentMarkdownPartId.delete(session);
+		this._currentReasoningPartId.delete(session);
+	}
 
-		case 'tool_complete': {
-			const e = event as IAgentToolCompleteEvent;
-			return {
-				type: ActionType.SessionToolCallComplete,
-				session,
-				turnId,
-				toolCallId: e.toolCallId,
-				result: e.result,
-			} satisfies IToolCallCompleteAction;
-		}
+	/**
+	 * Maps a flat {@link IAgentProgressEvent} from the agent host into
+	 * protocol {@link ISessionAction}(s) suitable for dispatch to the reducer.
+	 *
+	 * Returns `undefined` for events that have no corresponding action.
+	 * May return an array when a single SDK event maps to multiple protocol actions.
+	 */
+	mapProgressEventToActions(event: IAgentProgressEvent, session: URI, turnId: string): ISessionAction | ISessionAction[] | undefined {
+		switch (event.type) {
+			case 'delta': {
+				const e = event as IAgentDeltaEvent;
+				const existingPartId = this._currentMarkdownPartId.get(session);
+				if (!existingPartId) {
+					// Create a new markdown part with the content directly
+					const partId = generateUuid();
+					this._currentMarkdownPartId.set(session, partId);
+					return {
+						type: ActionType.SessionResponsePart,
+						session,
+						turnId,
+						part: { kind: ResponsePartKind.Markdown, id: partId, content: e.content },
+					};
+				}
+				return {
+					type: ActionType.SessionDelta,
+					session,
+					turnId,
+					partId: existingPartId,
+					content: e.content,
+				};
+			}
 
-		case 'idle':
-			return {
-				type: ActionType.SessionTurnComplete,
-				session,
-				turnId,
-			} satisfies ITurnCompleteAction;
+			case 'tool_start': {
+				// A new tool call invalidates the current markdown part so the
+				// next text delta creates a fresh part after the tool call.
+				this._currentMarkdownPartId.delete(session);
 
-		case 'error': {
-			const e = event as IAgentErrorEvent;
-			return {
-				type: ActionType.SessionError,
-				session,
-				turnId,
-				error: {
-					errorType: e.errorType,
-					message: e.message,
-					stack: e.stack,
-				},
-			} satisfies ISessionErrorAction;
-		}
+				// The Copilot SDK provides full parameters at tool_start time.
+				// We emit both toolCallStart (streaming → created) and toolCallReady
+				// (params complete → running with auto-confirm) as a pair.
+				const e = event as IAgentToolStartEvent;
+				const meta: Record<string, unknown> = { toolKind: e.toolKind, language: e.language };
 
-		case 'usage': {
-			const e = event as IAgentUsageEvent;
-			return {
-				type: ActionType.SessionUsage,
-				session,
-				turnId,
-				usage: {
-					inputTokens: e.inputTokens,
-					outputTokens: e.outputTokens,
-					model: e.model,
-					cacheReadTokens: e.cacheReadTokens,
-				},
-			} satisfies IUsageAction;
-		}
+				// Subagent metadata is normalized by the per-SDK adapter (e.g.
+				// the Copilot adapter maps `agent_type` → `subagentAgentName`),
+				// so the generic mapper just forwards it as-is.
+				if (e.subagentDescription) {
+					meta.subagentDescription = e.subagentDescription;
+				}
+				if (e.subagentAgentName) {
+					meta.subagentAgentName = e.subagentAgentName;
+				}
 
-		case 'title_changed':
-			return {
-				type: ActionType.SessionTitleChanged,
-				session,
-				title: (event as IAgentTitleChangedEvent).title,
-			} satisfies ITitleChangedAction;
-
-		case 'permission_request': {
-			const e = event as IAgentPermissionRequestEvent;
-			return {
-				type: ActionType.SessionPermissionRequest,
-				session,
-				turnId,
-				request: {
-					requestId: e.requestId,
-					permissionKind: e.permissionKind,
+				const startAction: IToolCallStartAction = {
+					type: ActionType.SessionToolCallStart,
+					session,
+					turnId,
 					toolCallId: e.toolCallId,
-					path: e.path,
-					fullCommandText: e.fullCommandText,
-					intention: e.intention,
-					serverName: e.serverName,
 					toolName: e.toolName,
-					rawRequest: e.rawRequest,
-				},
-			} satisfies IPermissionRequestAction;
+					displayName: e.displayName,
+					toolClientId: e.toolClientId,
+					_meta: meta,
+				};
+
+				// For client tools, do NOT auto-ready — the tool handler
+				// will fire a separate tool_ready event once the deferred
+				// is in place (or the permission flow fires it first).
+				if (e.toolClientId) {
+					return startAction;
+				}
+
+				const readyAction: IToolCallReadyAction = {
+					type: ActionType.SessionToolCallReady,
+					session,
+					turnId,
+					toolCallId: e.toolCallId,
+					invocationMessage: e.invocationMessage,
+					toolInput: e.toolInput,
+					confirmed: ToolCallConfirmationReason.NotNeeded,
+				};
+				return [startAction, readyAction];
+			}
+
+			case 'tool_ready': {
+				// Two scenarios:
+				// 1. Permission request: confirmationTitle is set →
+				//    transition to PendingConfirmation (no `confirmed`).
+				// 2. Client tool auto-ready: confirmationTitle is absent →
+				//    transition to Running (`confirmed: NotNeeded`).
+				const e = event;
+				return {
+					type: ActionType.SessionToolCallReady,
+					session,
+					turnId,
+					toolCallId: e.toolCallId,
+					invocationMessage: e.invocationMessage,
+					toolInput: e.toolInput,
+					confirmationTitle: e.confirmationTitle,
+					edits: e.edits,
+					...(!e.confirmationTitle ? { confirmed: ToolCallConfirmationReason.NotNeeded } : {}),
+				} satisfies IToolCallReadyAction;
+			}
+
+			case 'tool_complete': {
+				const e = event as IAgentToolCompleteEvent;
+				return {
+					type: ActionType.SessionToolCallComplete,
+					session,
+					turnId,
+					toolCallId: e.toolCallId,
+					result: e.result,
+				} satisfies IToolCallCompleteAction;
+			}
+
+			case 'tool_content_changed': {
+				const e = event as IAgentToolContentChangedEvent;
+				return {
+					type: ActionType.SessionToolCallContentChanged,
+					session,
+					turnId,
+					toolCallId: e.toolCallId,
+					content: e.content,
+				} satisfies ISessionToolCallContentChangedAction;
+			}
+
+			case 'idle':
+				return {
+					type: ActionType.SessionTurnComplete,
+					session,
+					turnId,
+				} satisfies ITurnCompleteAction;
+
+			case 'error': {
+				const e = event as IAgentErrorEvent;
+				return {
+					type: ActionType.SessionError,
+					session,
+					turnId,
+					error: {
+						errorType: e.errorType,
+						message: e.message,
+						stack: e.stack,
+					},
+				} satisfies ISessionErrorAction;
+			}
+
+			case 'usage': {
+				const e = event as IAgentUsageEvent;
+				return {
+					type: ActionType.SessionUsage,
+					session,
+					turnId,
+					usage: {
+						inputTokens: e.inputTokens,
+						outputTokens: e.outputTokens,
+						model: e.model,
+						cacheReadTokens: e.cacheReadTokens,
+					},
+				} satisfies IUsageAction;
+			}
+
+			case 'title_changed':
+				return {
+					type: ActionType.SessionTitleChanged,
+					session,
+					title: (event as IAgentTitleChangedEvent).title,
+				} satisfies ITitleChangedAction;
+
+			case 'reasoning': {
+				const e = event as IAgentReasoningEvent;
+				const existingPartId = this._currentReasoningPartId.get(session);
+				if (!existingPartId) {
+					// Create a new reasoning part with the content directly
+					const partId = generateUuid();
+					this._currentReasoningPartId.set(session, partId);
+					return {
+						type: ActionType.SessionResponsePart,
+						session,
+						turnId,
+						part: { kind: ResponsePartKind.Reasoning, id: partId, content: e.content },
+					};
+				}
+				return {
+					type: ActionType.SessionReasoning,
+					session,
+					turnId,
+					partId: existingPartId,
+					content: e.content,
+				};
+			}
+
+			case 'message': {
+				// The SDK fires a `message` event with the complete assembled
+				// content after all streaming deltas. If delta events already
+				// captured the text (tracked via _currentMarkdownPartId), skip.
+				// Otherwise the text arrived without preceding deltas (e.g.
+				// after tool calls), so emit a new response part.
+				const e = event as IAgentMessageEvent;
+				if (e.role !== 'assistant' || !e.content) {
+					return undefined;
+				}
+				const existingPartId = this._currentMarkdownPartId.get(session);
+				if (existingPartId) {
+					// Deltas already streamed the content for this part
+					return undefined;
+				}
+				const partId = generateUuid();
+				this._currentMarkdownPartId.set(session, partId);
+				return {
+					type: ActionType.SessionResponsePart,
+					session,
+					turnId,
+					part: { kind: ResponsePartKind.Markdown, id: partId, content: e.content },
+				};
+			}
+
+			case 'user_input_request': {
+				const e = event as IAgentUserInputRequestEvent;
+				return {
+					type: ActionType.SessionInputRequested,
+					session,
+					request: e.request,
+				} satisfies ISessionInputRequestedAction;
+			}
+
+			default:
+				return undefined;
 		}
-
-		case 'reasoning':
-			return {
-				type: ActionType.SessionReasoning,
-				session,
-				turnId,
-				content: (event as IAgentReasoningEvent).content,
-			} satisfies IReasoningAction;
-
-		case 'message':
-			return undefined;
-
-		default:
-			return undefined;
 	}
 }

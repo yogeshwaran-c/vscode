@@ -6,6 +6,7 @@
 import './media/changesTitleBarWidget.css';
 
 import { $, append } from '../../../../base/browser/dom.js';
+import { mainWindow } from '../../../../base/browser/window.js';
 import { BaseActionViewItem, IBaseActionViewItemOptions } from '../../../../base/browser/ui/actionbar/actionViewItems.js';
 import { createInstantHoverDelegate } from '../../../../base/browser/ui/hover/hoverDelegateFactory.js';
 import { IAction } from '../../../../base/common/actions.js';
@@ -21,15 +22,17 @@ import { IInstantiationService, ServicesAccessor } from '../../../../platform/in
 import { IHoverService } from '../../../../platform/hover/browser/hover.js';
 import { IWorkbenchContribution } from '../../../../workbench/common/contributions.js';
 import { IsAuxiliaryWindowContext, AuxiliaryBarVisibleContext } from '../../../../workbench/common/contextkeys.js';
-import { IAgentSessionsService } from '../../../../workbench/contrib/chat/browser/agentSessions/agentSessionsService.js';
 import { getAgentChangesSummary } from '../../../../workbench/contrib/chat/browser/agentSessions/agentSessionsModel.js';
 import { IWorkbenchLayoutService, Parts } from '../../../../workbench/services/layout/browser/layoutService.js';
 import { IPaneCompositePartService } from '../../../../workbench/services/panecomposite/browser/panecomposite.js';
+import { IEditorGroupsService } from '../../../../workbench/services/editor/common/editorGroupsService.js';
+import { ITelemetryService } from '../../../../platform/telemetry/common/telemetry.js';
 import { ViewContainerLocation } from '../../../../workbench/common/views.js';
 import { Menus } from '../../../browser/menus.js';
 import { SessionsWelcomeVisibleContext } from '../../../common/contextkeys.js';
-import { ISessionsManagementService } from '../../sessions/browser/sessionsManagementService.js';
-import { CHANGES_VIEW_CONTAINER_ID } from './changesView.js';
+import { logChangesViewToggle } from '../../../common/sessionsTelemetry.js';
+import { ISessionsManagementService } from '../../../services/sessions/common/sessionsManagement.js';
+import { CHANGES_VIEW_CONTAINER_ID } from '../common/changes.js';
 
 const TOGGLE_CHANGES_VIEW_ID = 'workbench.action.agentSessions.toggleChangesView';
 
@@ -48,7 +51,6 @@ class ChangesTitleBarActionViewItem extends BaseActionViewItem {
 		action: IAction,
 		options: IBaseActionViewItemOptions | undefined,
 		@IHoverService private readonly hoverService: IHoverService,
-		@IAgentSessionsService private readonly agentSessionsService: IAgentSessionsService,
 		@ISessionsManagementService private readonly activeSessionService: ISessionsManagementService,
 		@IWorkbenchLayoutService private readonly layoutService: IWorkbenchLayoutService,
 	) {
@@ -61,7 +63,7 @@ class ChangesTitleBarActionViewItem extends BaseActionViewItem {
 		}));
 
 		// Re-render when sessions data changes
-		this._register(this.agentSessionsService.model.onDidChangeSessions(() => {
+		this._register(this.activeSessionService.onDidChangeSessions(() => {
 			this._rebuildIndicators();
 		}));
 
@@ -78,17 +80,16 @@ class ChangesTitleBarActionViewItem extends BaseActionViewItem {
 
 		this._container = container;
 		container.classList.add('changes-titlebar-indicator');
+		container.setAttribute('role', 'button');
 
 		this._rebuildIndicators();
 		this._updateActiveState();
 	}
 
-	override onClick(): void {
-		this._action.run();
-	}
-
 	private _updateActiveState(): void {
-		this._container?.classList.toggle('active', this.layoutService.isVisible(Parts.AUXILIARYBAR_PART));
+		const isVisible = this.layoutService.isVisible(Parts.AUXILIARYBAR_PART);
+		this._container?.classList.toggle('toggled', isVisible);
+		this._container?.setAttribute('aria-pressed', String(isVisible));
 	}
 
 	private _rebuildIndicators(): void {
@@ -104,8 +105,8 @@ class ChangesTitleBarActionViewItem extends BaseActionViewItem {
 		// Get change summary from the active session
 		const activeSession = this.activeSessionService.activeSession.get();
 		const resource = activeSession?.resource;
-		const session = resource ? this.agentSessionsService.getSession(resource) : undefined;
-		const summary = session ? getAgentChangesSummary(session.changes) : undefined;
+		const session = resource ? this.activeSessionService.getSession(resource) : undefined;
+		const summary = session ? getAgentChangesSummary(session.changes.get()) : undefined;
 
 		// Rebuild inner content: [diff icon] +insertions -deletions
 		append(btn, $(ThemeIcon.asCSSSelector(Codicon.diffMultiple)));
@@ -121,11 +122,13 @@ class ChangesTitleBarActionViewItem extends BaseActionViewItem {
 		}
 
 		if (summary) {
+			const label = localize('changesSummary', "{0} file(s) changed, {1} insertion(s), {2} deletion(s)", summary.files, summary.insertions, summary.deletions);
+			btn.setAttribute('aria-label', label);
 			this._indicatorDisposables.add(this.hoverService.setupManagedHover(
-				this._hoverDelegate, btn,
-				localize('changesSummary', "{0} file(s) changed, {1} insertion(s), {2} deletion(s)", summary.files, summary.insertions, summary.deletions)
+				this._hoverDelegate, btn, label
 			));
 		} else {
+			btn.setAttribute('aria-label', localize('showChanges', "Show Changes"));
 			this._indicatorDisposables.add(this.hoverService.setupManagedHover(
 				this._hoverDelegate, btn,
 				localize('showChanges', "Show Changes")
@@ -158,7 +161,7 @@ export class ChangesTitleBarContribution extends Disposable implements IWorkbenc
 				toggled: AuxiliaryBarVisibleContext,
 			},
 			group: 'navigation',
-			order: 10, // After Run Script (8) and Terminal toggle (9)
+			order: 11, // After Run Script (8), Open in VS Code (9), and Open Terminal (10)
 			when: ContextKeyExpr.and(IsAuxiliaryWindowContext.toNegated(), SessionsWelcomeVisibleContext.toNegated()),
 		}));
 
@@ -183,11 +186,26 @@ registerAction2(class extends Action2 {
 	run(accessor: ServicesAccessor): void {
 		const layoutService = accessor.get(IWorkbenchLayoutService);
 		const paneCompositeService = accessor.get(IPaneCompositePartService);
+		const editorGroupService = accessor.get(IEditorGroupsService);
+		const telemetryService = accessor.get(ITelemetryService);
 
 		const isVisible = !layoutService.isVisible(Parts.AUXILIARYBAR_PART);
-		layoutService.setPartHidden(!isVisible, Parts.AUXILIARYBAR_PART);
+
 		if (isVisible) {
+			// Editor part
+			const hasEditors = editorGroupService.groups.some(group => !group.isEmpty);
+			if (hasEditors && !layoutService.isVisible(Parts.EDITOR_PART, mainWindow)) {
+				layoutService.setPartHidden(false, Parts.EDITOR_PART);
+			}
+
+			// Auxiliary bar part
+			layoutService.setPartHidden(false, Parts.AUXILIARYBAR_PART);
 			paneCompositeService.openPaneComposite(CHANGES_VIEW_CONTAINER_ID, ViewContainerLocation.AuxiliaryBar);
+		} else {
+			layoutService.setPartHidden(true, Parts.EDITOR_PART);
+			layoutService.setPartHidden(true, Parts.AUXILIARYBAR_PART);
 		}
+
+		logChangesViewToggle(telemetryService, isVisible);
 	}
 });
