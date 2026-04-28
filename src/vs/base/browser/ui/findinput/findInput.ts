@@ -176,25 +176,25 @@ export class FindInput extends Widget {
 			// Arrow-Key support to navigate between options
 			this.onkeydown(this.domNode, (event: IKeyboardEvent) => {
 				if (event.equals(KeyCode.LeftArrow) || event.equals(KeyCode.RightArrow) || event.equals(KeyCode.Escape)) {
-					const indexes = this.getOptionNavigationIndexes();
-					const index = indexes.indexOf(<HTMLElement>this.domNode.ownerDocument.activeElement);
+					const elements = this.getOptionNavigationElements();
+					const index = elements.indexOf(<HTMLElement>this.domNode.ownerDocument.activeElement);
 					if (index >= 0) {
 						let newIndex: number = -1;
 						if (event.equals(KeyCode.RightArrow)) {
-							newIndex = (index + 1) % indexes.length;
+							newIndex = (index + 1) % elements.length;
 						} else if (event.equals(KeyCode.LeftArrow)) {
 							if (index === 0) {
-								newIndex = indexes.length - 1;
+								newIndex = elements.length - 1;
 							} else {
 								newIndex = index - 1;
 							}
 						}
 
 						if (event.equals(KeyCode.Escape)) {
-							indexes[index].blur();
+							elements[index].blur();
 							this.inputBox.focus();
 						} else if (newIndex >= 0) {
-							indexes[newIndex].focus();
+							elements[newIndex].focus();
 						}
 
 						dom.EventHelper.stop(event, true);
@@ -251,21 +251,21 @@ export class FindInput extends Widget {
 	 * navigation among the find input toggle buttons. Subclasses can override
 	 * this to include additional toggle-like controls.
 	 */
-	protected getOptionNavigationIndexes(): HTMLElement[] {
-		const indexes: HTMLElement[] = [];
+	protected getOptionNavigationElements(): HTMLElement[] {
+		const elements: HTMLElement[] = [];
 		if (this.caseSensitive) {
-			indexes.push(this.caseSensitive.domNode);
+			elements.push(this.caseSensitive.domNode);
 		}
 		if (this.wholeWords) {
-			indexes.push(this.wholeWords.domNode);
+			elements.push(this.wholeWords.domNode);
 		}
 		if (this.regex) {
-			indexes.push(this.regex.domNode);
+			elements.push(this.regex.domNode);
 		}
 		for (const toggle of this.additionalToggles) {
-			indexes.push(toggle.domNode);
+			elements.push(toggle.domNode);
 		}
-		return indexes;
+		return elements;
 	}
 
 	public layout(style: { collapsedFindWidget: boolean; narrowFindWidget: boolean; reducedFindWidget: boolean }) {

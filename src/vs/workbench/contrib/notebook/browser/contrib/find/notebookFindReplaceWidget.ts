@@ -257,15 +257,31 @@ export class NotebookFindInput extends FindInput {
 		this.controls.appendChild(this._findFilter.container);
 	}
 
-	protected override getOptionNavigationIndexes(): HTMLElement[] {
-		const indexes = super.getOptionNavigationIndexes();
+	private isOptionNavigationFocusable(element: HTMLElement | null): element is HTMLElement {
+		if (!element) {
+			return false;
+		}
+
+		if (element.tabIndex < 0 || element.getAttribute('aria-disabled') === 'true') {
+			return false;
+		}
+
+		return dom.getWindow(element).getComputedStyle(element).display !== 'none';
+	}
+
+	protected override getOptionNavigationElements(): HTMLElement[] {
+		// Filter out the regex toggle (and any other ancestor toggle) when it has
+		// been removed from the tab order — e.g. when filters are active the
+		// notebook sets `regex.domNode.tabIndex = -1` and we don't want arrow
+		// keys to land on a non-focusable control.
+		const elements = super.getOptionNavigationElements().filter(element => this.isOptionNavigationFocusable(element));
 		// Include the filter button's focusable element in arrow-key navigation
 		// so users can reach it with left/right arrow keys in addition to Tab.
 		const filterFocusable = this._findFilter.container.querySelector<HTMLElement>('a.action-label');
-		if (filterFocusable) {
-			indexes.push(filterFocusable);
+		if (this.isOptionNavigationFocusable(filterFocusable)) {
+			elements.push(filterFocusable);
 		}
-		return indexes;
+		return elements;
 	}
 
 	override setEnabled(enabled: boolean) {
