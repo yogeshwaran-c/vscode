@@ -8,10 +8,9 @@ import './media/accountWidget.css';
 import './media/accountTitleBarWidget.css';
 import '../../../../workbench/contrib/chat/browser/chatStatus/media/chatStatus.css';
 import Severity from '../../../../base/common/severity.js';
-import { Disposable, DisposableStore, MutableDisposable } from '../../../../base/common/lifecycle.js';
-import { Event } from '../../../../base/common/event.js';
+import { Disposable, DisposableStore, MutableDisposable, toDisposable } from '../../../../base/common/lifecycle.js';
 import { localize, localize2 } from '../../../../nls.js';
-import { Action2, MenuRegistry, registerAction2, IMenuService, MenuId } from '../../../../platform/actions/common/actions.js';
+import { Action2, MenuRegistry, registerAction2, IMenuService } from '../../../../platform/actions/common/actions.js';
 import { ContextKeyExpr, IContextKeyService } from '../../../../platform/contextkey/common/contextkey.js';
 import { IDefaultAccountService } from '../../../../platform/defaultAccount/common/defaultAccount.js';
 import { IInstantiationService, ServicesAccessor } from '../../../../platform/instantiation/common/instantiation.js';
@@ -39,23 +38,20 @@ import { ChatEntitlement, ChatEntitlementService, IChatEntitlementService } from
 import { ChatStatusDashboard } from '../../../../workbench/contrib/chat/browser/chatStatus/chatStatusDashboard.js';
 import { HoverPosition } from '../../../../base/browser/ui/hover/hoverWidget.js';
 import { ThemeIcon } from '../../../../base/common/themables.js';
-import { getAccountTitleBarBadgeKey, getAccountTitleBarState } from './accountTitleBarState.js';
-import { SessionsWelcomeVisibleContext } from '../../../common/contextkeys.js';
+import { getAccountProfileImageUrl, getAccountTitleBarBadgeKey, getAccountTitleBarState, resolveAccountInfo } from '../../../browser/accountTitleBarState.js';
+import { IsPhoneLayoutContext, SessionsWelcomeVisibleContext } from '../../../common/contextkeys.js';
 import { IsAuxiliaryWindowContext } from '../../../../workbench/common/contextkeys.js';
 import { IAuthenticationAccessService } from '../../../../workbench/services/authentication/browser/authenticationAccessService.js';
 import { IAuthenticationUsageService } from '../../../../workbench/services/authentication/browser/authenticationUsageService.js';
 import { IAuthenticationService } from '../../../../workbench/services/authentication/common/authentication.js';
-import { resetSessionsWelcome } from '../../welcome/browser/welcome.contribution.js';
-import { IStorageService } from '../../../../platform/storage/common/storage.js';
-import { IWorkbenchLayoutService } from '../../../../workbench/services/layout/browser/layoutService.js';
-import { IWorkbenchEnvironmentService } from '../../../../workbench/services/environment/common/environmentService.js';
-import { ILogService } from '../../../../platform/log/common/log.js';
+import { IChatDashboardService } from '../../../browser/chatDashboardService.js';
+import { InstantiationType, registerSingleton } from '../../../../platform/instantiation/common/extensions.js';
 
 // --- Account Menu Items --- //
-const AccountMenu = new MenuId('SessionsAccountMenu');
+const AccountMenu = Menus.AccountMenu;
 const SessionsTitleBarAccountWidgetAction = 'sessions.action.titleBarAccountWidget';
 const SessionsTitleBarUpdateWidgetAction = 'sessions.action.titleBarUpdateWidget';
-const SESSIONS_ACCOUNT_TITLEBAR_PANEL_WIDTH = 280;
+const SESSIONS_ACCOUNT_TITLEBAR_PANEL_WIDTH = 360;
 
 function shouldHideSessionsTitleBarUpdateWidget(type: StateType): boolean {
 	return type === StateType.Uninitialized
@@ -158,22 +154,6 @@ async function runSessionsUpdateAction(
 	}
 }
 
-export async function showSessionsWelcomeAfterSignOut(
-	chatEntitlementService: Pick<IChatEntitlementService, 'entitlement' | 'onDidChangeEntitlement'>,
-	resetWelcome: () => void,
-): Promise<void> {
-	const waitForUnknownEntitlement = Event.toPromise(Event.filter(chatEntitlementService.onDidChangeEntitlement, () => chatEntitlementService.entitlement === ChatEntitlement.Unknown));
-	try {
-		if (chatEntitlementService.entitlement !== ChatEntitlement.Unknown) {
-			await waitForUnknownEntitlement;
-		}
-	} finally {
-		waitForUnknownEntitlement.cancel();
-	}
-
-	resetWelcome();
-}
-
 // Sign In (shown when signed out)
 registerAction2(class extends Action2 {
 	constructor() {
@@ -214,13 +194,6 @@ registerAction2(class extends Action2 {
 		const authenticationService = accessor.get(IAuthenticationService);
 		const authenticationUsageService = accessor.get(IAuthenticationUsageService);
 		const authenticationAccessService = accessor.get(IAuthenticationAccessService);
-		const chatEntitlementService = accessor.get(IChatEntitlementService);
-		const storageService = accessor.get(IStorageService);
-		const instantiationService = accessor.get(IInstantiationService);
-		const layoutService = accessor.get(IWorkbenchLayoutService);
-		const contextKeyService = accessor.get(IContextKeyService);
-		const environmentService = accessor.get(IWorkbenchEnvironmentService);
-		const logService = accessor.get(ILogService);
 		const defaultAccount = await defaultAccountService.getDefaultAccount();
 		if (!defaultAccount) {
 			return;
@@ -244,18 +217,29 @@ registerAction2(class extends Action2 {
 		await Promise.all(sessions.map(session => authenticationService.removeSession(providerId, session.id)));
 		authenticationUsageService.removeAccountUsage(providerId, accountLabel);
 		authenticationAccessService.removeAllowedExtensions(providerId, accountLabel);
-		await showSessionsWelcomeAfterSignOut(chatEntitlementService, () => resetSessionsWelcome(storageService, instantiationService, layoutService, chatEntitlementService, contextKeyService, environmentService, logService));
 	}
 });
 
-// Settings
+// Color Theme (hidden on phone — no theme picker UI on mobile)
+MenuRegistry.appendMenuItem(AccountMenu, {
+	command: {
+		id: 'workbench.action.selectTheme',
+		title: localize('selectColorTheme', "Color Theme"),
+	},
+	when: IsPhoneLayoutContext.negate(),
+	group: '2_settings',
+	order: 1,
+});
+
+// Settings (hidden on phone — no settings UI on mobile)
 MenuRegistry.appendMenuItem(AccountMenu, {
 	command: {
 		id: 'workbench.action.openSettings',
 		title: localize('settings', "Settings"),
 	},
+	when: IsPhoneLayoutContext.negate(),
 	group: '2_settings',
-	order: 1,
+	order: 2,
 });
 
 // Update actions
@@ -264,24 +248,31 @@ registerUpdateMenuItems(AccountMenu, '3_updates');
 class TitleBarAccountWidget extends BaseActionViewItem {
 
 	private container: HTMLElement | undefined;
+	private avatarElement: HTMLImageElement | undefined;
 	private iconElement: HTMLElement | undefined;
 	private labelElement: HTMLElement | undefined;
 	private badgeElement: HTMLElement | undefined;
 	private accountName: string | undefined;
+	private accountProviderId: string | undefined;
 	private accountProviderLabel: string | undefined;
 	private isAccountLoading = true;
 	private accountRequestCounter = 0;
+	private avatarRequestCounter = 0;
+	private currentAvatarUrl: string | undefined;
+	private loadedAvatarUrl: string | undefined;
 	private lastState: ReturnType<typeof getAccountTitleBarState>;
 	private isMenuVisible = false;
 	private lastBadgeKey: string | undefined;
 	private dismissedBadgeKey: string | undefined;
 	private readonly copilotDashboardStore = this._register(new MutableDisposable<DisposableStore>());
 	private readonly clickPanelDisposable = this._register(new MutableDisposable<DisposableStore>());
+	private readonly avatarLoadDisposable = this._register(new MutableDisposable());
 
 	constructor(
 		action: IAction,
 		options: IBaseActionViewItemOptions | undefined,
 		@IDefaultAccountService private readonly defaultAccountService: IDefaultAccountService,
+		@IAuthenticationService private readonly authenticationService: IAuthenticationService,
 		@IMenuService private readonly menuService: IMenuService,
 		@IContextKeyService private readonly contextKeyService: IContextKeyService,
 		@IHoverService private readonly hoverService: IHoverService,
@@ -297,6 +288,7 @@ class TitleBarAccountWidget extends BaseActionViewItem {
 		});
 
 		this._register(this.defaultAccountService.onDidChangeDefaultAccount(() => this.refreshAccount()));
+		this._register(this.authenticationService.onDidChangeSessions(() => this.refreshAccount()));
 		this._register(this.chatEntitlementService.onDidChangeEntitlement(() => this.renderState()));
 		this._register(this.chatEntitlementService.onDidChangeSentiment(() => this.renderState()));
 		this._register(this.chatEntitlementService.onDidChangeQuotaExceeded(() => this.renderState()));
@@ -304,12 +296,22 @@ class TitleBarAccountWidget extends BaseActionViewItem {
 		this.refreshAccount();
 	}
 
+	override setFocusable(_focusable: boolean): void {
+		// Don't let the ActionBar remove focusability - this widget must
+		// always be reachable via Tab even when a sibling item is hidden.
+	}
+
 	override render(container: HTMLElement): void {
 		super.render(container);
 
 		this.container = container;
 		container.classList.add('sessions-account-titlebar-widget');
+		container.setAttribute('role', 'button');
+		container.tabIndex = 0;
 
+		this.avatarElement = append(container, $('img.sessions-account-titlebar-widget-avatar', { alt: localize('accountAvatarAltFallback', "Account profile image"), draggable: 'false' })) as HTMLImageElement;
+		this.avatarElement.decoding = 'async';
+		this.avatarElement.referrerPolicy = 'no-referrer';
 		this.iconElement = append(container, $('.sessions-account-titlebar-widget-icon'));
 		this.labelElement = append(container, $('span.sessions-account-titlebar-widget-label'));
 		this.badgeElement = append(container, $('span.sessions-account-titlebar-widget-badge'));
@@ -330,27 +332,35 @@ class TitleBarAccountWidget extends BaseActionViewItem {
 		this.isAccountLoading = true;
 		this.renderState();
 
-		const account = await this.defaultAccountService.getDefaultAccount();
+		const info = await resolveAccountInfo(this.defaultAccountService, this.authenticationService);
 		if (requestId !== this.accountRequestCounter) {
 			return;
 		}
 
-		this.accountName = account?.accountName;
-		this.accountProviderLabel = account?.authenticationProvider.name;
+		this.accountName = info?.accountName;
+		this.accountProviderId = info?.accountProviderId;
+		this.accountProviderLabel = info?.accountProviderLabel;
 		this.isAccountLoading = false;
+		this.refreshAvatar();
 		this.renderState();
 	}
 
 	private renderState(): void {
-		if (!this.container || !this.iconElement || !this.labelElement || !this.badgeElement) {
+		if (!this.container || !this.avatarElement || !this.iconElement || !this.labelElement || !this.badgeElement) {
 			return;
 		}
+
+		// When we have a session but entitlement hasn't resolved yet,
+		// treat as Unresolved to avoid showing "Agents Signed Out".
+		const entitlement = this.accountName && this.chatEntitlementService.entitlement === ChatEntitlement.Unknown
+			? ChatEntitlement.Unresolved
+			: this.chatEntitlementService.entitlement;
 
 		const state = getAccountTitleBarState({
 			isAccountLoading: this.isAccountLoading,
 			accountName: this.accountName,
 			accountProviderLabel: this.accountProviderLabel,
-			entitlement: this.chatEntitlementService.entitlement,
+			entitlement,
 			sentiment: this.chatEntitlementService.sentiment,
 			quotas: this.chatEntitlementService.quotas,
 		});
@@ -368,15 +378,84 @@ class TitleBarAccountWidget extends BaseActionViewItem {
 		}
 
 		const shouldShowDotBadge = !!badgeKey && badgeKey !== this.dismissedBadgeKey;
+		const loadedAvatarUrl = !this.isAccountLoading ? this.loadedAvatarUrl : undefined;
+		const hasLoadedAvatar = !!loadedAvatarUrl;
 		const titleBarIcon = state.dotBadge ? Codicon.account : state.icon;
 
+		this.avatarElement.classList.toggle('visible', hasLoadedAvatar);
+		this.avatarElement.alt = this.getAvatarAltText(hasLoadedAvatar);
+		if (hasLoadedAvatar) {
+			if (this.avatarElement.src !== loadedAvatarUrl) {
+				this.avatarElement.src = loadedAvatarUrl;
+			}
+		} else {
+			this.avatarElement.removeAttribute('src');
+		}
+
 		this.iconElement.className = `sessions-account-titlebar-widget-icon ${ThemeIcon.asClassName(titleBarIcon)}`;
+		this.iconElement.classList.toggle('hidden', hasLoadedAvatar);
 		this.labelElement.textContent = '';
 		this.badgeElement.textContent = '';
 		this.badgeElement.classList.toggle('dot-badge', shouldShowDotBadge);
 		this.badgeElement.classList.toggle('dot-badge-warning', shouldShowDotBadge && state.dotBadge === 'warning');
 		this.badgeElement.classList.toggle('dot-badge-error', shouldShowDotBadge && state.dotBadge === 'error');
 		this.badgeElement.style.display = shouldShowDotBadge ? '' : 'none';
+	}
+
+	private getAvatarAltText(hasLoadedAvatar: boolean): string {
+		if (hasLoadedAvatar && this.accountProviderId === 'github' && this.accountName) {
+			return localize('accountAvatarAlt', "GitHub profile image for {0}", this.accountName);
+		}
+
+		return localize('accountAvatarAltFallback', "Account profile image");
+	}
+
+	private refreshAvatar(): void {
+		const avatarUrl = getAccountProfileImageUrl(this.accountProviderId, this.accountName);
+		if (avatarUrl === this.currentAvatarUrl) {
+			return;
+		}
+
+		this.currentAvatarUrl = avatarUrl;
+		this.loadedAvatarUrl = undefined;
+		this.avatarLoadDisposable.clear();
+		const requestId = ++this.avatarRequestCounter;
+
+		if (!avatarUrl) {
+			this.renderState();
+			return;
+		}
+
+		const image = new Image();
+		image.referrerPolicy = 'no-referrer';
+		const clearHandlers = () => {
+			image.onload = null;
+			image.onerror = null;
+		};
+		image.onload = () => {
+			if (requestId !== this.avatarRequestCounter) {
+				return;
+			}
+
+			this.loadedAvatarUrl = avatarUrl;
+			this.renderState();
+			clearHandlers();
+		};
+		image.onerror = () => {
+			if (requestId !== this.avatarRequestCounter) {
+				return;
+			}
+
+			this.loadedAvatarUrl = undefined;
+			this.renderState();
+			clearHandlers();
+		};
+		this.avatarLoadDisposable.value = toDisposable(() => {
+			clearHandlers();
+			image.src = '';
+		});
+		image.src = avatarUrl;
+		this.renderState();
 	}
 
 	private getHoverTarget(): { targetElements: HTMLElement[]; x: number } {
@@ -418,6 +497,7 @@ class TitleBarAccountWidget extends BaseActionViewItem {
 				this.isMenuVisible = false;
 				this.container?.classList.remove('menu-visible');
 				this.renderState();
+				this.container?.focus();
 			}
 		});
 
@@ -527,10 +607,11 @@ class TitleBarAccountWidget extends BaseActionViewItem {
 		fillInActionBarActions(menu.getActions(), rawActions);
 		menu.dispose();
 
+		const themeAction = rawActions.find(action => !(action instanceof Separator) && action.id === 'workbench.action.selectTheme');
 		const settingsAction = rawActions.find(action => !(action instanceof Separator) && action.id === 'workbench.action.openSettings');
 		const signOutAction = rawActions.find(action => !(action instanceof Separator) && action.id === 'workbench.action.agenticSignOut');
 
-		return [settingsAction, signOutAction].filter((action): action is IAction => !!action);
+		return [themeAction, settingsAction, signOutAction].filter((action): action is IAction => !!action);
 	}
 
 	private getPanelActions(): IAction[] {
@@ -551,12 +632,15 @@ class TitleBarAccountWidget extends BaseActionViewItem {
 
 			return action.id !== 'workbench.action.agenticSignOut'
 				&& action.id !== 'workbench.action.openSettings'
+				&& action.id !== 'workbench.action.selectTheme'
 				&& !action.id.startsWith('update.');
 		});
 	}
 
 	private getHeaderActionIcon(action: IAction): ThemeIcon {
 		switch (action.id) {
+			case 'workbench.action.selectTheme':
+				return Codicon.symbolColor;
 			case 'workbench.action.openSettings':
 				return Codicon.settingsGear;
 			case 'workbench.action.agenticSignOut':
@@ -617,6 +701,7 @@ class TitleBarUpdateWidget extends BaseActionViewItem {
 
 		this.container = container;
 		container.classList.add('sessions-update-titlebar-widget');
+		container.setAttribute('role', 'button');
 
 		this.labelElement = append(container, $('span.sessions-update-titlebar-widget-label'));
 		this.hoverAttachment.value = this.updateHoverWidget.attachTo(container);
@@ -668,6 +753,43 @@ class TitleBarUpdateWidget extends BaseActionViewItem {
 
 // --- Register custom view item --- //
 
+// Actions registered at module level so Menus.TitleBarRightLayout is non-empty when the
+// toolbar is first constructed. The run() is a no-op — rendering is handled by the custom
+// view items registered in AccountWidgetContribution.
+registerAction2(class extends Action2 {
+	constructor() {
+		super({
+			id: SessionsTitleBarUpdateWidgetAction,
+			title: localize2('agentsUpdateTitleBar', "Agents Update"),
+			menu: {
+				id: Menus.TitleBarRightLayout,
+				group: 'navigation',
+				order: 99,
+				when: ContextKeyExpr.and(IsAuxiliaryWindowContext.toNegated(), SessionsWelcomeVisibleContext.toNegated()),
+			}
+		});
+	}
+
+	run(): void { }
+});
+
+registerAction2(class extends Action2 {
+	constructor() {
+		super({
+			id: SessionsTitleBarAccountWidgetAction,
+			title: localize2('agentsAccountStatusTitleBar', "Agents Account and Status"),
+			menu: {
+				id: Menus.TitleBarRightLayout,
+				group: 'navigation',
+				order: 100,
+				when: IsAuxiliaryWindowContext.toNegated(),
+			}
+		});
+	}
+
+	run(): void { }
+});
+
 class AccountWidgetContribution extends Disposable implements IWorkbenchContribution {
 
 	static readonly ID = 'workbench.contrib.sessionsWidget';
@@ -678,54 +800,43 @@ class AccountWidgetContribution extends Disposable implements IWorkbenchContribu
 	) {
 		super();
 
-		// Titlebar update widget (to the right of separator, left of account badge)
 		this._register(actionViewItemService.register(Menus.TitleBarRightLayout, SessionsTitleBarUpdateWidgetAction, (action, options) => {
 			return instantiationService.createInstance(TitleBarUpdateWidget, action, options);
 		}, undefined));
 
-		this._register(registerAction2(class extends Action2 {
-			constructor() {
-				super({
-					id: SessionsTitleBarUpdateWidgetAction,
-					title: localize2('agentsUpdateTitleBar', "Agents Update"),
-					menu: {
-						id: Menus.TitleBarRightLayout,
-						group: 'navigation',
-						order: 99,
-						when: ContextKeyExpr.and(IsAuxiliaryWindowContext.toNegated(), SessionsWelcomeVisibleContext.toNegated()),
-					}
-				});
-			}
-
-			async run(): Promise<void> {
-				// Handled by the custom view item
-			}
-		}));
-
-		// Titlebar account widget (rightmost in titlebar)
 		this._register(actionViewItemService.register(Menus.TitleBarRightLayout, SessionsTitleBarAccountWidgetAction, (action, options) => {
 			return instantiationService.createInstance(TitleBarAccountWidget, action, options);
 		}, undefined));
-
-		this._register(registerAction2(class extends Action2 {
-			constructor() {
-				super({
-					id: SessionsTitleBarAccountWidgetAction,
-					title: localize2('agentsAccountStatusTitleBar', "Agents Account and Status"),
-					menu: {
-						id: Menus.TitleBarRightLayout,
-						group: 'navigation',
-						order: 100,
-					}
-				});
-			}
-
-			async run(): Promise<void> {
-				// Handled by the custom view item
-			}
-		}));
-
 	}
 }
 
-registerWorkbenchContribution2(AccountWidgetContribution.ID, AccountWidgetContribution, WorkbenchPhase.AfterRestored);
+registerWorkbenchContribution2(AccountWidgetContribution.ID, AccountWidgetContribution, WorkbenchPhase.BlockRestore);
+
+// --- Chat Dashboard Service (real implementation for mobile account sheet) --- //
+
+class ChatDashboardServiceImpl implements IChatDashboardService {
+	readonly _serviceBrand: undefined;
+
+	constructor(
+		@IInstantiationService private readonly instantiationService: IInstantiationService,
+	) { }
+
+	createDashboardElement(store: DisposableStore): HTMLElement | undefined {
+		const dashboardElement = ChatStatusDashboard.instantiateInContents(this.instantiationService, store, {
+			disableInlineSuggestionsSettings: true,
+			disableModelSelection: true,
+			disableProviderOptions: true,
+			disableCompletionsSnooze: true,
+		});
+
+		store.add(disposableWindowInterval(mainWindow, () => {
+			if (!dashboardElement.isConnected) {
+				store.dispose();
+			}
+		}, 2000));
+
+		return dashboardElement;
+	}
+}
+
+registerSingleton(IChatDashboardService, ChatDashboardServiceImpl, InstantiationType.Delayed);

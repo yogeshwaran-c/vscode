@@ -12,19 +12,21 @@ import type {
 	IAgentReasoningEvent,
 	IAgentTitleChangedEvent,
 	IAgentToolCompleteEvent,
+	IAgentToolContentChangedEvent,
 	IAgentToolStartEvent,
 	IAgentUsageEvent,
 	IAgentUserInputRequestEvent
 } from '../common/agentService.js';
 import {
 	ActionType,
-	type ISessionAction,
-	type ISessionErrorAction,
-	type ISessionInputRequestedAction,
+	type SessionAction,
+	type SessionErrorAction,
+	type SessionInputRequestedAction,
 	type ITitleChangedAction,
 	type IToolCallCompleteAction,
 	type IToolCallReadyAction,
 	type IToolCallStartAction,
+	type SessionToolCallContentChangedAction,
 	type ITurnCompleteAction,
 	type IUsageAction
 } from '../common/state/sessionActions.js';
@@ -53,12 +55,12 @@ export class AgentEventMapper {
 
 	/**
 	 * Maps a flat {@link IAgentProgressEvent} from the agent host into
-	 * protocol {@link ISessionAction}(s) suitable for dispatch to the reducer.
+	 * protocol {@link SessionAction}(s) suitable for dispatch to the reducer.
 	 *
 	 * Returns `undefined` for events that have no corresponding action.
 	 * May return an array when a single SDK event maps to multiple protocol actions.
 	 */
-	mapProgressEventToActions(event: IAgentProgressEvent, session: URI, turnId: string): ISessionAction | ISessionAction[] | undefined {
+	mapProgressEventToActions(event: IAgentProgressEvent, session: URI, turnId: string): SessionAction | SessionAction[] | undefined {
 		switch (event.type) {
 			case 'delta': {
 				const e = event as IAgentDeltaEvent;
@@ -84,9 +86,15 @@ export class AgentEventMapper {
 			}
 
 			case 'tool_start': {
-				// A new tool call invalidates the current markdown part so the
-				// next text delta creates a fresh part after the tool call.
+				// A new tool call invalidates the current markdown and reasoning
+				// parts so the next text/reasoning delta creates fresh parts
+				// after the tool call. The Copilot SDK emits multiple rounds
+				// of (reasoning → message → tool calls) within a single chat
+				// turn; without this, every later round's reasoning would be
+				// appended onto the very first reasoning part and bunch at
+				// the top of the response on restore.
 				this._currentMarkdownPartId.delete(session);
+				this._currentReasoningPartId.delete(session);
 
 				// The Copilot SDK provides full parameters at tool_start time.
 				// We emit both toolCallStart (streaming → created) and toolCallReady
@@ -94,18 +102,14 @@ export class AgentEventMapper {
 				const e = event as IAgentToolStartEvent;
 				const meta: Record<string, unknown> = { toolKind: e.toolKind, language: e.language };
 
-				// For subagent tools, extract agent metadata from tool arguments
-				// so the renderer can display the name/description immediately.
-				if (e.toolKind === 'subagent' && e.toolArguments) {
-					try {
-						const args = JSON.parse(e.toolArguments) as Record<string, unknown>;
-						if (typeof args.description === 'string') {
-							meta.subagentDescription = args.description;
-						}
-						if (typeof args.agentName === 'string') {
-							meta.subagentAgentName = args.agentName;
-						}
-					} catch { /* ignore parse errors */ }
+				// Subagent metadata is normalized by the per-SDK adapter (e.g.
+				// the Copilot adapter maps `agent_type` → `subagentAgentName`),
+				// so the generic mapper just forwards it as-is.
+				if (e.subagentDescription) {
+					meta.subagentDescription = e.subagentDescription;
+				}
+				if (e.subagentAgentName) {
+					meta.subagentAgentName = e.subagentAgentName;
 				}
 
 				const startAction: IToolCallStartAction = {
@@ -118,6 +122,14 @@ export class AgentEventMapper {
 					toolClientId: e.toolClientId,
 					_meta: meta,
 				};
+
+				// For client tools, do NOT auto-ready — the tool handler
+				// will fire a separate tool_ready event once the deferred
+				// is in place (or the permission flow fires it first).
+				if (e.toolClientId) {
+					return startAction;
+				}
+
 				const readyAction: IToolCallReadyAction = {
 					type: ActionType.SessionToolCallReady,
 					session,
@@ -131,9 +143,11 @@ export class AgentEventMapper {
 			}
 
 			case 'tool_ready': {
-				// A running tool requires re-confirmation (e.g. mid-execution permission).
-				// Emit toolCallReady WITHOUT confirmed, which transitions
-				// Running → PendingConfirmation in the reducer.
+				// Two scenarios:
+				// 1. Permission request: confirmationTitle is set →
+				//    transition to PendingConfirmation (no `confirmed`).
+				// 2. Client tool auto-ready: confirmationTitle is absent →
+				//    transition to Running (`confirmed: NotNeeded`).
 				const e = event;
 				return {
 					type: ActionType.SessionToolCallReady,
@@ -143,6 +157,8 @@ export class AgentEventMapper {
 					invocationMessage: e.invocationMessage,
 					toolInput: e.toolInput,
 					confirmationTitle: e.confirmationTitle,
+					edits: e.edits,
+					...(!e.confirmationTitle ? { confirmed: ToolCallConfirmationReason.NotNeeded } : {}),
 				} satisfies IToolCallReadyAction;
 			}
 
@@ -155,6 +171,17 @@ export class AgentEventMapper {
 					toolCallId: e.toolCallId,
 					result: e.result,
 				} satisfies IToolCallCompleteAction;
+			}
+
+			case 'tool_content_changed': {
+				const e = event as IAgentToolContentChangedEvent;
+				return {
+					type: ActionType.SessionToolCallContentChanged,
+					session,
+					turnId,
+					toolCallId: e.toolCallId,
+					content: e.content,
+				} satisfies SessionToolCallContentChangedAction;
 			}
 
 			case 'idle':
@@ -175,7 +202,7 @@ export class AgentEventMapper {
 						message: e.message,
 						stack: e.stack,
 					},
-				} satisfies ISessionErrorAction;
+				} satisfies SessionErrorAction;
 			}
 
 			case 'usage': {
@@ -254,7 +281,7 @@ export class AgentEventMapper {
 					type: ActionType.SessionInputRequested,
 					session,
 					request: e.request,
-				} satisfies ISessionInputRequestedAction;
+				} satisfies SessionInputRequestedAction;
 			}
 
 			default:

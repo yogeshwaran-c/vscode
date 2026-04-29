@@ -22,7 +22,6 @@ export enum ToolName {
 	ApplyPatch = 'apply_patch',
 	Codebase = 'semantic_search',
 	VSCodeAPI = 'get_vscode_api',
-	TestFailure = 'test_failure',
 	FindFiles = 'file_search',
 	FindTextInFiles = 'grep_search',
 	ReadFile = 'read_file',
@@ -48,7 +47,8 @@ export enum ToolName {
 	FindTestFiles = 'test_search',
 	GetProjectSetupInfo = 'get_project_setup_info',
 	SearchViewResults = 'get_search_view_results',
-	GithubRepo = 'github_repo',
+	GithubSemanticRepoSearch = 'github_repo',
+	GithubTextSearch = 'github_text_search',
 	CreateDirectory = 'create_directory',
 	RunVscodeCmd = 'run_vscode_command',
 	CoreManageTodoList = 'manage_todo_list',
@@ -62,6 +62,7 @@ export enum ToolName {
 	CoreRunTask = 'run_task',
 	CoreGetTaskOutput = 'get_task_output',
 	CoreRunTest = 'runTests',
+	CoreTestFailure = 'testFailure',
 	EditFilesPlaceholder = 'edit_files',
 	CoreRunSubagent = 'runSubagent',
 	CoreConfirmationTool = 'vscode_get_confirmation',
@@ -73,6 +74,8 @@ export enum ToolName {
 	ToolSearch = 'tool_search',
 	ResolveMemoryFileUri = 'resolve_memory_file_uri',
 	ExecutionSubagent = 'execution_subagent',
+	Skill = 'skill',
+	SessionStoreSql = 'session_store_sql',
 	CoreOpenBrowserPage = 'open_browser_page',
 	CoreClickElement = 'click_element',
 	CoreScreenshotPage = 'screenshot_page',
@@ -105,7 +108,6 @@ export enum ContributedToolName {
 	Codebase = 'copilot_searchCodebase',
 	SearchWorkspaceSymbols = 'copilot_searchWorkspaceSymbols',
 	VSCodeAPI = 'copilot_getVSCodeAPI',
-	TestFailure = 'copilot_testFailure',
 	/** @deprecated moving to core soon */
 	RunTests = 'copilot_runTests1',
 	FindFiles = 'copilot_findFiles',
@@ -132,13 +134,15 @@ export enum ContributedToolName {
 	FindTestFiles = 'copilot_findTestFiles',
 	GetProjectSetupInfo = 'copilot_getProjectSetupInfo',
 	SearchViewResults = 'copilot_getSearchResults',
-	GithubRepo = 'copilot_githubRepo',
+	GithubSemanticRepoSearch = 'copilot_githubRepo',
+	GithubTextSearch = 'copilot_githubTextSearch',
 	CreateAndRunTask = 'copilot_createAndRunTask',
 	CreateDirectory = 'copilot_createDirectory',
 	RunVscodeCmd = 'copilot_runVscodeCommand',
 	EditFilesPlaceholder = 'copilot_editFiles',
 	SwitchAgent = 'copilot_switchAgent',
 	ResolveMemoryFileUri = 'copilot_resolveMemoryFileUri',
+	SessionStoreSql = 'copilot_sessionStoreSql',
 }
 
 export const byokEditToolNamesToToolNames = {
@@ -222,7 +226,8 @@ export const toolCategories: Record<ToolName, ToolCategory> = {
 
 	// Web Interaction
 	[ToolName.FetchWebPage]: ToolCategory.WebInteraction,
-	[ToolName.GithubRepo]: ToolCategory.WebInteraction,
+	[ToolName.GithubSemanticRepoSearch]: ToolCategory.WebInteraction,
+	[ToolName.GithubTextSearch]: ToolCategory.WebInteraction,
 	[ToolName.CoreOpenBrowserPage]: ToolCategory.WebInteraction,
 	[ToolName.CoreClickElement]: ToolCategory.WebInteraction,
 	[ToolName.CoreScreenshotPage]: ToolCategory.WebInteraction,
@@ -249,9 +254,9 @@ export const toolCategories: Record<ToolName, ToolCategory> = {
 	[ToolName.CoreTerminalLastCommand]: ToolCategory.VSCodeInteraction,
 
 	// Testing
-	[ToolName.TestFailure]: ToolCategory.Testing,
 	[ToolName.FindTestFiles]: ToolCategory.Testing,
 	[ToolName.CoreRunTest]: ToolCategory.Testing,
+	[ToolName.CoreTestFailure]: ToolCategory.Testing,
 
 	// Other tools - categorize appropriately
 	[ToolName.CoreConfirmationTool]: ToolCategory.VSCodeInteraction,
@@ -262,6 +267,8 @@ export const toolCategories: Record<ToolName, ToolCategory> = {
 	[ToolName.Memory]: ToolCategory.VSCodeInteraction,
 	[ToolName.ToolSearch]: ToolCategory.Core,
 	[ToolName.ResolveMemoryFileUri]: ToolCategory.Core,
+	[ToolName.Skill]: ToolCategory.Core,
+	[ToolName.SessionStoreSql]: ToolCategory.Core,
 } as const;
 
 
