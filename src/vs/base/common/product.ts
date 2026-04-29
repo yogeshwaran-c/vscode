@@ -75,6 +75,7 @@ export interface IProductConfiguration {
 
 	readonly win32AppUserModelId?: string;
 	readonly win32MutexName?: string;
+	readonly win32SetupMutexName?: string;
 	readonly win32RegValueName?: string;
 	readonly win32NameVersion?: string;
 	readonly win32VersionedUpdate?: boolean;
@@ -85,6 +86,7 @@ export interface IProductConfiguration {
 
 	readonly urlProtocol: string;
 	readonly dataFolderName: string; // location for extensions (e.g. ~/.vscode-insiders)
+	readonly sharedDataFolderName: string; // location for shared data (e.g. ~/.vscode-insiders-shared)
 
 	readonly builtInExtensions?: IBuiltInExtension[];
 	readonly walkthroughMetadata?: IProductWalkthrough[];
@@ -221,6 +223,7 @@ export interface IProductConfiguration {
 	readonly 'editSessions.store'?: Omit<ConfigurationSyncStore, 'insidersUrl' | 'stableUrl'>;
 	readonly darwinUniversalAssetId?: string;
 	readonly darwinBundleIdentifier?: string;
+	readonly darwinSiblingBundleIdentifier?: string;
 	readonly profileTemplatesUrl?: string;
 
 	readonly commonlyUsedSettings?: string[];
@@ -234,6 +237,9 @@ export interface IProductConfiguration {
 	readonly remoteDefaultExtensionsIfInstalledLocally?: string[];
 
 	readonly extensionConfigurationPolicy?: IStringDictionary<IPolicy>;
+
+	readonly onboardingKeymaps?: readonly IProductOnboardingKeymap[];
+	readonly onboardingThemes?: readonly IProductOnboardingTheme[];
 
 	readonly embedded?: IEmbeddedProductConfiguration;
 
@@ -249,12 +255,27 @@ export interface IProductConfiguration {
 	};
 }
 
+export interface IProductOnboardingKeymap {
+	readonly id: string;
+	readonly label: string;
+	readonly extensionId?: string;
+	readonly description: string;
+}
+
+export interface IProductOnboardingTheme {
+	readonly id: string;
+	readonly label: string;
+	readonly themeId: string;
+	readonly type: 'dark' | 'light' | 'hcDark' | 'hcLight';
+}
+
 export type IEmbeddedProductConfiguration = Pick<IProductConfiguration,
 	'nameShort' |
 	'nameLong' |
 	'applicationName' |
 	'dataFolderName' |
 	'darwinBundleIdentifier' |
+	'darwinSiblingBundleIdentifier' |
 	'urlProtocol' |
 	'win32AppUserModelId' |
 	'win32MutexName' |
@@ -379,7 +400,7 @@ export interface IDefaultChatAgent {
 	readonly publicCodeMatchesUrl: string;
 	readonly manageSettingsUrl: string;
 	readonly managePlanUrl: string;
-	readonly manageOverageUrl: string;
+	readonly manageAdditionalSpendUrl: string;
 	readonly upgradePlanUrl: string;
 	readonly signUpUrl: string;
 	readonly termsStatementUrl: string;
@@ -406,7 +427,6 @@ export interface IDefaultChatAgent {
 
 	readonly walkthroughCommand: string;
 	readonly completionsMenuCommand: string;
-	readonly completionsRefreshTokenCommand: string;
 	readonly chatRefreshTokenCommand: string;
 	readonly generateCommitMessageCommand: string;
 	readonly resolveMergeConflictsCommand: string;

@@ -39,6 +39,7 @@ export namespace ChatEntitlementContextKeys {
 		hidden: new RawContextKey<boolean>('chatSetupHidden', false, true), 		// True when chat setup is explicitly hidden.
 		installed: new RawContextKey<boolean>('chatSetupInstalled', false, true),  	// True when the chat extension is installed and enabled.
 		disabled: new RawContextKey<boolean>('chatSetupDisabled', false, true),  	// True when the chat extension is disabled due to any other reason than workspace trust.
+		disabledInWorkspace: new RawContextKey<boolean>('chatSetupDisabledInWorkspace', false, true),	// True when chat is disabled at the workspace level via settings.
 		untrusted: new RawContextKey<boolean>('chatSetupUntrusted', false, true),  	// True when the chat extension is disabled due to workspace trust.
 		later: new RawContextKey<boolean>('chatSetupLater', false, true),  			// True when the user wants to finish setup later.
 		registered: new RawContextKey<boolean>('chatSetupRegistered', false, true), // True when the user has registered as Free or Pro user.
@@ -121,6 +122,15 @@ export interface IChatSentiment {
 	disabled?: boolean;
 
 	/**
+	 * Chat is disabled at the workspace level
+	 *
+	 * Note: in contrast to `hidden` (which hides all UI globally),
+	 * this only disables Chat in the current workspace while
+	 * keeping its UI visible so the user can re-enable it.
+	 */
+	disabledInWorkspace?: boolean;
+
+	/**
 	 * Chat is disabled due to missing workspace trust.
 	 *
 	 * Note: even though this disables Chat, we want to treat it
@@ -175,6 +185,13 @@ export interface IChatEntitlementService {
 	readonly anonymousObs: IObservable<boolean>;
 
 	markAnonymousRateLimited(): void;
+
+	/**
+	 * Force the hidden state on or off, overriding the normal entitlement logic.
+	 * Used by the account policy gate to hide all AI features when the gate is
+	 * active and unsatisfied.
+	 */
+	setForceHidden(hidden: boolean): void;
 
 	update(token: CancellationToken): Promise<void>;
 }
@@ -242,7 +259,7 @@ function isAnonymous(configurationService: IConfigurationService, entitlement: C
 		return false; // only consider signed out users
 	}
 
-	if (sentiment.hidden) {
+	if (sentiment.hidden || sentiment.disabledInWorkspace) {
 		return false; // only consider enabled scenarios
 	}
 
@@ -333,7 +350,7 @@ export class ChatEntitlementService extends Disposable implements IChatEntitleme
 		);
 		this.sentimentObs = observableFromEvent(this.onDidChangeSentiment, () => this.sentiment);
 
-		if ((isWeb && !environmentService.remoteAuthority)) {
+		if ((isWeb && !environmentService.remoteAuthority && !environmentService.isSessionsWindow)) {
 			ChatEntitlementContextKeys.Setup.hidden.bindTo(this.contextKeyService).set(true); // hide copilot UI on web if unsupported
 			return;
 		}
@@ -511,6 +528,7 @@ export class ChatEntitlementService extends Disposable implements IChatEntitleme
 			completed: this.contextKeyService.getContextKeyValue<boolean>(ChatEntitlementContextKeys.Setup.completed.key) === true,
 			installed: this.contextKeyService.getContextKeyValue<boolean>(ChatEntitlementContextKeys.Setup.installed.key) === true,
 			hidden: this.contextKeyService.getContextKeyValue<boolean>(ChatEntitlementContextKeys.Setup.hidden.key) === true,
+			disabledInWorkspace: this.contextKeyService.getContextKeyValue<boolean>(ChatEntitlementContextKeys.Setup.disabledInWorkspace.key) === true,
 			disabled: this.contextKeyService.getContextKeyValue<boolean>(ChatEntitlementContextKeys.Setup.disabled.key) === true,
 			untrusted: this.contextKeyService.getContextKeyValue<boolean>(ChatEntitlementContextKeys.Setup.untrusted.key) === true,
 			later: this.contextKeyService.getContextKeyValue<boolean>(ChatEntitlementContextKeys.Setup.later.key) === true,
@@ -542,6 +560,16 @@ export class ChatEntitlementService extends Disposable implements IChatEntitleme
 
 		this.chatQuotaExceededContextKey.set(true);
 		this._onDidChangeQuotaExceeded.fire();
+	}
+
+	setForceHidden(hidden: boolean): void {
+		if (this.context) {
+			this.context.value.setForceHidden(hidden);
+		} else {
+			// No ChatEntitlementContext (e.g. no defaultChatAgent in product.json).
+			// Set the context key directly as a fallback.
+			ChatEntitlementContextKeys.Setup.hidden.bindTo(this.contextKeyService).set(hidden);
+		}
 	}
 
 	async update(token: CancellationToken): Promise<void> {
@@ -584,15 +612,10 @@ interface IEntitlements {
 }
 
 export interface IQuotaSnapshot {
-	readonly total: number;
-
-	readonly remaining: number;
 	readonly percentRemaining: number;
-
-	readonly overageEnabled: boolean;
-	readonly overageCount: number;
-
 	readonly unlimited: boolean;
+	readonly resetAt?: number;
+	readonly usageBasedBilling?: boolean;
 }
 
 interface IQuotas {
@@ -602,6 +625,8 @@ interface IQuotas {
 	readonly chat?: IQuotaSnapshot;
 	readonly completions?: IQuotaSnapshot;
 	readonly premiumChat?: IQuotaSnapshot;
+	readonly additionalUsageEnabled?: boolean;
+	readonly additionalUsageCount?: number;
 }
 
 export class ChatEntitlementRequests extends Disposable {
@@ -725,9 +750,9 @@ export class ChatEntitlementRequests extends Disposable {
 			entitlement: entitlements.entitlement,
 			tid: entitlementsData.analytics_tracking_id,
 			sku: entitlements.sku,
-			quotaChat: entitlements.quotas?.chat?.remaining,
-			quotaPremiumChat: entitlements.quotas?.premiumChat?.remaining,
-			quotaCompletions: entitlements.quotas?.completions?.remaining,
+			quotaChat: entitlements.quotas?.chat?.percentRemaining,
+			quotaPremiumChat: entitlements.quotas?.premiumChat?.percentRemaining,
+			quotaCompletions: entitlements.quotas?.completions?.percentRemaining,
 			quotaResetDate: entitlements.quotas?.resetDate
 		});
 
@@ -743,22 +768,14 @@ export class ChatEntitlementRequests extends Disposable {
 		// Legacy Free SKU Quota
 		if (entitlementsData.monthly_quotas?.chat && typeof entitlementsData.limited_user_quotas?.chat === 'number') {
 			quotas.chat = {
-				total: entitlementsData.monthly_quotas.chat,
-				remaining: entitlementsData.limited_user_quotas.chat,
 				percentRemaining: Math.min(100, Math.max(0, (entitlementsData.limited_user_quotas.chat / entitlementsData.monthly_quotas.chat) * 100)),
-				overageEnabled: false,
-				overageCount: 0,
 				unlimited: false
 			};
 		}
 
 		if (entitlementsData.monthly_quotas?.completions && typeof entitlementsData.limited_user_quotas?.completions === 'number') {
 			quotas.completions = {
-				total: entitlementsData.monthly_quotas.completions,
-				remaining: entitlementsData.limited_user_quotas.completions,
 				percentRemaining: Math.min(100, Math.max(0, (entitlementsData.limited_user_quotas.completions / entitlementsData.monthly_quotas.completions) * 100)),
-				overageEnabled: false,
-				overageCount: 0,
 				unlimited: false
 			};
 		}
@@ -771,12 +788,10 @@ export class ChatEntitlementRequests extends Disposable {
 					continue;
 				}
 				const quotaSnapshot: IQuotaSnapshot = {
-					total: rawQuotaSnapshot.entitlement,
-					remaining: rawQuotaSnapshot.remaining,
 					percentRemaining: Math.min(100, Math.max(0, rawQuotaSnapshot.percent_remaining)),
-					overageEnabled: rawQuotaSnapshot.overage_permitted,
-					overageCount: rawQuotaSnapshot.overage_count,
-					unlimited: rawQuotaSnapshot.unlimited
+					unlimited: rawQuotaSnapshot.unlimited,
+					usageBasedBilling: rawQuotaSnapshot.token_based_billing,
+					resetAt: rawQuotaSnapshot.quota_reset_at || undefined,
 				};
 
 				switch (quotaType) {
@@ -791,8 +806,11 @@ export class ChatEntitlementRequests extends Disposable {
 						break;
 				}
 			}
-		}
 
+			const overageSource = entitlementsData.quota_snapshots['premium_interactions'];
+			quotas.additionalUsageEnabled = overageSource?.overage_permitted ?? false;
+			quotas.additionalUsageCount = overageSource?.overage_count ?? 0;
+		}
 		return quotas;
 	}
 
@@ -846,7 +864,7 @@ export class ChatEntitlementRequests extends Disposable {
 	}
 
 	async forceResolveEntitlement(token = CancellationToken.None): Promise<IEntitlements | undefined> {
-		const defaultAccount = await this.defaultAccountService.refresh();
+		const defaultAccount = await this.defaultAccountService.refresh({ forceRefresh: true });
 		if (!defaultAccount) {
 			return undefined;
 		}
@@ -1043,6 +1061,7 @@ export class ChatEntitlementContext extends Disposable {
 
 	private readonly completedContext: IContextKey<boolean>;
 	private readonly hiddenContext: IContextKey<boolean>;
+	private readonly disabledInWorkspaceContext: IContextKey<boolean>;
 	private readonly laterContext: IContextKey<boolean>;
 	private readonly installedContext: IContextKey<boolean>;
 	private readonly disabledContext: IContextKey<boolean>;
@@ -1083,6 +1102,7 @@ export class ChatEntitlementContext extends Disposable {
 
 		this.completedContext = ChatEntitlementContextKeys.Setup.completed.bindTo(contextKeyService);
 		this.hiddenContext = ChatEntitlementContextKeys.Setup.hidden.bindTo(contextKeyService);
+		this.disabledInWorkspaceContext = ChatEntitlementContextKeys.Setup.disabledInWorkspace.bindTo(contextKeyService);
 		this.laterContext = ChatEntitlementContextKeys.Setup.later.bindTo(contextKeyService);
 		this.installedContext = ChatEntitlementContextKeys.Setup.installed.bindTo(contextKeyService);
 		this.disabledContext = ChatEntitlementContextKeys.Setup.disabled.bindTo(contextKeyService);
@@ -1118,23 +1138,32 @@ export class ChatEntitlementContext extends Disposable {
 		}));
 	}
 
+	private _forceHidden = false;
+
 	private withConfiguration(state: IChatEntitlementContextState): IChatEntitlementContextState {
-		if (this.configurationService.getValue(ChatEntitlementContext.CHAT_DISABLED_CONFIGURATION_KEY) === true) {
+		if (this._forceHidden || this.configurationService.getValue(ChatEntitlementContext.CHAT_DISABLED_CONFIGURATION_KEY) === true) {
 			return {
 				...state,
-				hidden: true // Setting always wins: if AI is disabled, set `hidden: true`
+				hidden: true
 			};
 		}
 
 		return state;
 	}
 
-	update(context: { installed: boolean; disabled: boolean; untrusted: boolean }): Promise<void>;
+	setForceHidden(hidden: boolean): void {
+		if (this._forceHidden !== hidden) {
+			this._forceHidden = hidden;
+			this.updateContext();
+		}
+	}
+
+	update(context: { installed: boolean; disabled: boolean; untrusted: boolean; disabledInWorkspace: boolean }): Promise<void>;
 	update(context: { completed: true }): Promise<void>;
 	update(context: { hidden: false }): Promise<void>; // legacy UI state from before we had a setting to hide, keep around to still support users who used this
 	update(context: { later: boolean }): Promise<void>;
 	update(context: { entitlement: ChatEntitlement; organisations: string[] | undefined; sku: string | undefined; copilotTrackingId: string | undefined }): Promise<void>;
-	async update(context: { completed?: boolean; installed?: boolean; disabled?: boolean; untrusted?: boolean; hidden?: false; later?: boolean; entitlement?: ChatEntitlement; organisations?: string[]; sku?: string; copilotTrackingId?: string }): Promise<void> {
+	async update(context: { completed?: boolean; installed?: boolean; disabled?: boolean; untrusted?: boolean; disabledInWorkspace?: boolean; hidden?: false; later?: boolean; entitlement?: ChatEntitlement; organisations?: string[]; sku?: string; copilotTrackingId?: string }): Promise<void> {
 		this.logService.trace(`[chat entitlement context] update(): ${JSON.stringify(context)}`);
 
 		const oldState = JSON.stringify(this._state);
@@ -1143,6 +1172,7 @@ export class ChatEntitlementContext extends Disposable {
 			this._state.installed = context.installed;
 			this._state.disabled = context.disabled;
 			this._state.untrusted = context.untrusted;
+			this._state.disabledInWorkspace = context.disabledInWorkspace;
 
 			if (context.installed && !context.disabled) {
 				context.hidden = false; // treat this as a sign to make Chat visible again in case it is hidden
@@ -1215,6 +1245,7 @@ export class ChatEntitlementContext extends Disposable {
 
 		this.completedContext.set(!!state.completed);
 		this.hiddenContext.set(!!state.hidden);
+		this.disabledInWorkspaceContext.set(!!state.disabledInWorkspace);
 		this.laterContext.set(!!state.later);
 		this.installedContext.set(!!state.installed);
 		this.disabledContext.set(!!state.disabled);

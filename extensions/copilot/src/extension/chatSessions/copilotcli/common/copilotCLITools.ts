@@ -475,10 +475,10 @@ export function stripReminders(text: string): string {
 		.replace(/<reminder>[\s\S]*?<\/reminder>\s*/g, '')
 		.replace(/<attachments>[\s\S]*?<\/attachments>\s*/g, '')
 		.replace(/<userRequest>[\s\S]*?<\/userRequest>\s*/g, '')
+		.replace(/<user_query>[\s\S]*?<\/user_query>\s*/g, '')
 		.replace(/<context>[\s\S]*?<\/context>\s*/g, '')
 		.replace(/<current_datetime>[\s\S]*?<\/current_datetime>\s*/g, '')
 		.replace(/<pr_metadata[^>]*\/?>\s*/g, '')
-		.replace(/<user_query[^>]*\/?>\s*/g, '')
 		.trim();
 }
 
@@ -524,7 +524,7 @@ export interface RequestIdDetails {
  * Build chat history from SDK events for VS Code chat session
  * Converts SDKEvents into ChatRequestTurn2 and ChatResponseTurn2 objects
  */
-export function buildChatHistoryFromEvents(sessionId: string, modelId: string | undefined, events: readonly SessionEvent[], getVSCodeRequestId: (sdkRequestId: string) => RequestIdDetails | undefined, delegationSummaryService: IChatDelegationSummaryService, logger: ILogger, workingDirectory?: URI, defaultModeInstructionsForLastRequest?: StoredModeInstructions): (ChatRequestTurn2 | ChatResponseTurn2)[] {
+export function buildChatHistoryFromEvents(sessionId: string, modelId: string | undefined, events: readonly SessionEvent[], getVSCodeRequestId: (sdkRequestId: string) => RequestIdDetails | undefined, delegationSummaryService: IChatDelegationSummaryService, logger: ILogger, workingDirectory?: URI, defaultModeInstructionsForLastRequest?: StoredModeInstructions, lastResponseDetails?: string): (ChatRequestTurn2 | ChatResponseTurn2)[] {
 	const turns: (ChatRequestTurn2 | ChatResponseTurn2)[] = [];
 	let currentResponseParts: ExtendedChatResponsePart[] = [];
 	const pendingToolInvocations = new Map<string, [ChatToolInvocationPart | ChatResponseMarkdownPart | ChatResponseThinkingProgressPart, toolData: ToolCall, parentToolCallId: string | undefined]>();
@@ -555,7 +555,7 @@ export function buildChatHistoryFromEvents(sessionId: string, modelId: string | 
 			processAssistantMessage(content);
 		}
 	}
-	const lastUserMessageId = findLast(events, event => event.type === 'user.message')?.id;
+	const lastUserMessageId = findLast(events, event => event.type === 'user.message' && !isSyntheticUserMessage(event))?.id;
 	for (const event of events) {
 		if (event.type !== 'assistant.message') {
 			flushPendingAssistantMessage();
@@ -563,6 +563,9 @@ export function buildChatHistoryFromEvents(sessionId: string, modelId: string | 
 
 		switch (event.type) {
 			case 'user.message': {
+				if (isSyntheticUserMessage(event)) {
+					continue;
+				}
 				details = getVSCodeRequestId(event.id);
 				// Flush any pending response parts before adding user message
 				if (currentResponseParts.length > 0) {
@@ -660,7 +663,19 @@ export function buildChatHistoryFromEvents(sessionId: string, modelId: string | 
 						isBuiltin: defaultModeInstructionsForLastRequest.isBuiltin,
 					};
 				}
-				turns.push(new ChatRequestTurn2(prompt, undefined, references, '', [], undefined, details?.requestId ?? event.id, modelId, modeInstructions2));
+				let commandPrefix = '';
+				switch (event.data.agentMode) {
+					case 'autopilot': {
+						commandPrefix = '/autopilot ';
+						break;
+					}
+					case 'plan': {
+						commandPrefix = '/plan ';
+						break;
+					}
+				}
+
+				turns.push(new ChatRequestTurn2(`${commandPrefix}${prompt}`, undefined, references, '', [], undefined, details?.requestId ?? event.id, modelId, modeInstructions2));
 				break;
 			}
 			case 'assistant.message_delta': {
@@ -732,7 +747,7 @@ export function buildChatHistoryFromEvents(sessionId: string, modelId: string | 
 	flushPendingAssistantMessage();
 
 	if (currentResponseParts.length > 0) {
-		turns.push(new ChatResponseTurn2(currentResponseParts, {}, ''));
+		turns.push(new ChatResponseTurn2(currentResponseParts, lastResponseDetails ? { details: lastResponseDetails } : {}, ''));
 	}
 
 	return turns;
@@ -1533,36 +1548,73 @@ function formatUpdateTodoInvocationCompleted(invocation: ChatToolInvocationPart,
 }
 
 
-export async function updateTodoList(
-	event: ToolExecutionStartEvent,
+/**
+ * Check whether a SQL query writes to the `todos` or `todo_deps` table.
+ * Pure reads (SELECT) are ignored to avoid unnecessary widget refreshes.
+ */
+export function isTodoRelatedSqlQuery(query: string): boolean {
+	const normalized = query.replace(/\s+/g, ' ').toLowerCase();
+	const targetsTodoTable = /\btodos\b/.test(normalized) || /\btodo_deps\b/.test(normalized);
+	if (!targetsTodoTable) {
+		return false;
+	}
+	return /\b(insert|update|delete|create|drop|alter)\b/.test(normalized);
+}
+
+interface SqlTodoItem {
+	readonly id: string;
+	readonly title: string;
+	readonly description: string;
+	readonly status: 'pending' | 'in_progress' | 'done' | 'blocked';
+}
+
+function mapSqlStatusToTodoStatus(status: string): 'not-started' | 'in-progress' | 'completed' {
+	switch (status) {
+		case 'done':
+			return 'completed';
+		case 'in_progress':
+			return 'in-progress';
+		case 'pending':
+		case 'blocked':
+		default:
+			return 'not-started';
+	}
+}
+
+/**
+ * Update the todo list widget from SQL todo items queried from the session database.
+ */
+export async function updateTodoListFromSqlItems(
+	items: readonly SqlTodoItem[],
 	toolsService: IToolsService,
 	toolInvocationToken: ChatParticipantToolToken,
 	token: CancellationToken
-) {
-	const toolData = event.data as ToolCall;
-
-	if (toolData.toolName !== 'update_todo' || !toolData.arguments.todos) {
-		return;
-	}
-	const { todoList } = parseTodoMarkdown(toolData.arguments.todos);
-	if (!todoList.length) {
-		return;
-	}
-
+): Promise<void> {
 	await toolsService.invokeTool(ToolName.CoreManageTodoList, {
 		input: {
 			operation: 'write',
-			todoList: todoList.map((item, i) => ({
+			todoList: items.map((item, i) => ({
 				id: i,
 				title: item.title,
-				description: '',
-				status: item.status
+				description: item.description || '',
+				status: mapSqlStatusToTodoStatus(item.status)
 			} satisfies IManageTodoListToolInputParams['todoList'][number])),
 		} satisfies IManageTodoListToolInputParams,
 		toolInvocationToken,
 	}, token);
 }
 
+export async function clearTodoList(toolsService: IToolsService,
+	toolInvocationToken: ChatParticipantToolToken,
+	token: CancellationToken): Promise<void> {
+	await toolsService.invokeTool(ToolName.CoreManageTodoList, {
+		input: {
+			operation: 'write',
+			todoList: []
+		} satisfies IManageTodoListToolInputParams,
+		toolInvocationToken,
+	}, token);
+}
 
 interface IManageTodoListToolInputParams {
 	readonly operation?: 'write' | 'read'; // Optional in write-only mode
@@ -1646,6 +1698,15 @@ export class FakeToolsService implements IToolsService {
 			};
 		}
 
+		if (name === 'vscode_reviewPlan') {
+			if (this._confirmationResult === 'no') {
+				return { content: [new LanguageModelTextPart(JSON.stringify({ rejected: true }))] };
+			}
+			const input = options.input as { actions?: Array<{ label: string }> } | undefined;
+			const firstAction = input?.actions?.[0]?.label;
+			return { content: [new LanguageModelTextPart(JSON.stringify({ action: firstAction, rejected: false }))] };
+		}
+
 		return { content: [] };
 	}
 
@@ -1672,4 +1733,13 @@ export class FakeToolsService implements IToolsService {
 	getEnabledTools(): LanguageModelToolInformation[] {
 		return [];
 	}
+}
+
+
+/**
+ * CLI sends 'synthetic' user messages for cases such as Skill invocations.
+ * We need to ensure these user.messages are not treated as regular user messages in the UI, which could cause confusion as they may not be directly from the user.
+ */
+export function isSyntheticUserMessage(event: Extract<SessionEvent, { type: 'user.message' }>): boolean {
+	return event.type === 'user.message' && !!event.data.source && (event.data.source ?? '').toLowerCase() !== 'user';
 }

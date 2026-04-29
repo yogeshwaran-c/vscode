@@ -205,6 +205,7 @@ abstract class OpenChatGlobalAction extends Action2 {
 			category: CHAT_CATEGORY,
 			precondition: ContextKeyExpr.and(
 				ChatContextKeys.Setup.hidden.negate(),
+				ChatContextKeys.Setup.disabledInWorkspace.negate(),
 			)
 		});
 	}
@@ -1012,6 +1013,30 @@ export function registerChatActions() {
 		}
 	});
 
+	registerAction2(class FocusQuestionCarouselTerminalAction extends Action2 {
+		static readonly ID = 'workbench.action.chat.focusQuestionCarouselTerminal';
+
+		constructor() {
+			super({
+				id: FocusQuestionCarouselTerminalAction.ID,
+				title: localize2('interactiveSession.focusQuestionCarouselTerminal.label', "Chat: Focus Terminal from Question Carousel"),
+				category: CHAT_CATEGORY,
+				f1: true,
+				precondition: ContextKeyExpr.and(ChatContextKeys.inChatSession, ChatContextKeys.Editing.hasQuestionCarousel, ChatContextKeys.chatQuestionCarouselHasTerminal),
+				keybinding: [{
+					weight: KeybindingWeight.WorkbenchContrib,
+					primary: KeyMod.Alt | KeyCode.KeyT,
+					when: ContextKeyExpr.and(ChatContextKeys.inChatQuestionCarousel, ChatContextKeys.Editing.hasQuestionCarousel, ChatContextKeys.chatQuestionCarouselHasTerminal),
+				}]
+			});
+		}
+
+		run(accessor: ServicesAccessor): void {
+			const widgetService = accessor.get(IChatWidgetService);
+			widgetService.lastFocusedWidget?.focusQuestionCarouselTerminal();
+		}
+	});
+
 	registerAction2(class FocusTipAction extends Action2 {
 		static readonly ID = 'workbench.action.chat.focusTip';
 
@@ -1192,7 +1217,7 @@ export function registerChatActions() {
 			}
 
 			const free = chatEntitlementService.entitlement === ChatEntitlement.Free;
-			const upgradeToPro = free ? localize('upgradeToPro', "Upgrade to GitHub Copilot Pro (your first 30 days are free) for:\n- Unlimited inline suggestions\n- Unlimited chat messages\n- Access to premium models") : undefined;
+			const upgradeToPro = free ? localize('upgradeToPro', "Upgrade to GitHub Copilot Pro for:\n- Unlimited inline suggestions\n- Unlimited chat messages\n- Access to premium models") : undefined;
 
 			await dialogService.prompt({
 				type: 'none',
@@ -1727,6 +1752,7 @@ MenuRegistry.appendMenuItem(MenuId.EditorContext, {
 	title: localize('generateCode', "Generate Code"),
 	when: ContextKeyExpr.and(
 		ChatContextKeys.Setup.hidden.negate(),
+		ChatContextKeys.Setup.disabledInWorkspace.negate(),
 	)
 });
 

@@ -11,11 +11,12 @@ import { ChatLocation, ChatResponse } from '../../../platform/chat/common/common
 import { ISessionTranscriptService } from '../../../platform/chat/common/sessionTranscriptService';
 import { ConfigKey, IConfigurationService } from '../../../platform/configuration/common/configurationService';
 import { ChatEndpointFamily, IEndpointProvider } from '../../../platform/endpoint/common/endpointProvider';
+import { ProxyAgenticEndpoint } from '../../../platform/endpoint/node/proxyAgenticEndpoint';
 import { IFileSystemService } from '../../../platform/filesystem/common/fileSystemService';
 import { IGitService } from '../../../platform/git/common/gitService';
 import { ILogService } from '../../../platform/log/common/logService';
 import { IOTelService } from '../../../platform/otel/common/otelService';
-import { IRequestLogger } from '../../../platform/requestLogger/node/requestLogger';
+import { IRequestLogger } from '../../../platform/requestLogger/common/requestLogger';
 import { IExperimentationService } from '../../../platform/telemetry/common/nullExperimentationService';
 import { ITelemetryService } from '../../../platform/telemetry/common/telemetry';
 import { IInstantiationService } from '../../../util/vs/platform/instantiation/common/instantiation';
@@ -36,6 +37,8 @@ export interface IExecutionSubagentToolCallingLoopOptions extends IToolCallingLo
 	subAgentInvocationId?: string;
 	/** The tool_call_id from the parent agent's LLM response that triggered this subagent invocation. */
 	parentToolCallId?: string;
+	/** The headerRequestId from the parent agent's fetch response that triggered this subagent invocation. */
+	parentHeaderRequestId?: string;
 }
 
 export class ExecutionSubagentToolCallingLoop extends ToolCallingLoop<IExecutionSubagentToolCallingLoopOptions> {
@@ -76,25 +79,36 @@ export class ExecutionSubagentToolCallingLoop extends ToolCallingLoop<IExecution
 		return context;
 	}
 
+	private static readonly DEFAULT_AGENTIC_PROXY_MODEL = 'exec-subagent-router-a';
+
 	/**
 	 * Get the endpoint to use for the execution subagent
 	 */
 	private async getEndpoint() {
-		const modelName = this._configurationService.getExperimentBasedConfig(ConfigKey.Advanced.ExecutionSubagentModel, this._experimentationService) as ChatEndpointFamily;
+		const modelName = this._configurationService.getExperimentBasedConfig(ConfigKey.Advanced.ExecutionSubagentModel, this._experimentationService) as ChatEndpointFamily | undefined;
+		const useAgenticProxy = this._configurationService.getExperimentBasedConfig(ConfigKey.Advanced.ExecutionSubagentUseAgenticProxy, this._experimentationService);
+
+		if (useAgenticProxy) {
+			// Use agentic proxy with ExecutionSubagentModel or default to DEFAULT_AGENTIC_PROXY_MODEL
+			const agenticProxyModel = modelName || ExecutionSubagentToolCallingLoop.DEFAULT_AGENTIC_PROXY_MODEL;
+			return this.instantiationService.createInstance(ProxyAgenticEndpoint, agenticProxyModel);
+		}
+
 		if (modelName) {
 			try {
-				let endpoint = await this.endpointProvider.getChatEndpoint(modelName);
-				if (!endpoint.supportsToolCalls) {
-					this._logService.warn(`[ExecutionSubagentToolCallingLoop] Configured model ${modelName} does not support tool calls. Falling back to request's endpoint.`);
-					endpoint = await this.endpointProvider.getChatEndpoint(this.options.request);
+				// Try to get the specified model
+				const endpoint = await this.endpointProvider.getChatEndpoint(modelName);
+				if (endpoint.supportsToolCalls) {
+					return endpoint;
 				}
-				return endpoint;
-			}
-			catch (error) {
-				this._logService.warn(`[ExecutionSubagentToolCallingLoop] Failed to get endpoint for model ${modelName}: ${error}. Falling back to request's endpoint.`);
+				// Model does not support tool calls, fallback to main agent endpoint
+				return await this.endpointProvider.getChatEndpoint(this.options.request);
+			} catch (error) {
+				// Model not available, fallback to main agent endpoint
 				return await this.endpointProvider.getChatEndpoint(this.options.request);
 			}
 		} else {
+			// No model name specified, use main agent endpoint
 			return await this.endpointProvider.getChatEndpoint(this.options.request);
 		}
 	}
@@ -120,6 +134,9 @@ export class ExecutionSubagentToolCallingLoop extends ToolCallingLoop<IExecution
 
 		const allowedExecutionTools = new Set([
 			ToolName.CoreRunInTerminal,
+			ToolName.CoreGetTerminalOutput,
+			ToolName.CoreSendToTerminal,
+			ToolName.CoreKillTerminal,
 		]);
 
 		return allTools.filter(tool => allowedExecutionTools.has(tool.name as ToolName));
@@ -146,6 +163,7 @@ export class ExecutionSubagentToolCallingLoop extends ToolCallingLoop<IExecution
 				subType: 'subagent/execution',
 				conversationId: this.options.conversation.sessionId,
 				parentToolCallId: this.options.parentToolCallId,
+				parentHeaderRequestId: this.options.parentHeaderRequestId,
 			},
 		}, token);
 	}
